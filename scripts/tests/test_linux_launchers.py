@@ -30,6 +30,14 @@ class LinuxLauncherContractTests(unittest.TestCase):
         self.assertIn("NB_KEYWORDS_ONLY=1", source)
         self.assertIn("start.sh", source)
 
+    def test_full_launcher_uses_single_data_word_database(self) -> None:
+        source = self.read("start.sh")
+
+        self.assertIn('WORDS_FILE="$DATA_DIR/words.json"', source)
+        self.assertNotIn("$ROOT/words.json", source)
+        self.assertNotIn('cp "$ROOT/words.json"', source)
+        self.assertIn("word database is missing", source)
+
     def test_stop_launcher_only_uses_recorded_verified_pids(self) -> None:
         source = self.read("stop.sh")
 

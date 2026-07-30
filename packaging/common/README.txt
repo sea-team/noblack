@@ -24,7 +24,7 @@ Linux 停止：./stop.sh
 配置与数据
 ----------
 复制 config.env.example 为 config.env 后可覆盖端口、线程、阈值、合并策略和令牌。
-可写词库位于 data/words.json，首次启动时由包内 words.json 初始化。
+词库位于 data/words.json，随包提供并由服务直接读取、更新。
 PID 文件位于 data/，日志位于 logs/。
 
 接口检查

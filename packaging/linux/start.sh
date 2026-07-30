@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 DATA_DIR="$ROOT/data"
 LOG_DIR="$ROOT/logs"
+WORDS_FILE="$DATA_DIR/words.json"
 GO_PID_FILE="$ROOT/data/noblack.pid"
 MODEL_PID_FILE="$ROOT/data/noblack-model.pid"
 GO_LOG="$ROOT/logs/noblack.log"
@@ -82,8 +83,9 @@ load_config
 : "${NB_WATCH:=true}"
 
 mkdir -p "$DATA_DIR" "$LOG_DIR"
-if [ ! -f "$DATA_DIR/words.json" ]; then
-  cp "$ROOT/words.json" "$DATA_DIR/words.json"
+if [ ! -f "$WORDS_FILE" ]; then
+  echo "[noblack] word database is missing: $WORDS_FILE" >&2
+  exit 1
 fi
 
 assert_not_running "$GO_PID_FILE" "$ROOT/noblack"
@@ -144,7 +146,7 @@ fi
 
 go_args=(
   -addr "$NB_ADDR"
-  -words "$DATA_DIR/words.json"
+  -words "$WORDS_FILE"
   -watch="$NB_WATCH"
   -model-service-url "$model_url"
 )

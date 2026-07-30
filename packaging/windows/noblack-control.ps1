@@ -182,7 +182,7 @@ function Start-NoblackServices {
 
     $wordsFile = Join-Path $DataDir "words.json"
     if (-not (Test-Path -LiteralPath $wordsFile -PathType Leaf)) {
-        Copy-Item -LiteralPath (Join-Path $Root "words.json") -Destination $wordsFile
+        throw "word database is missing: $wordsFile"
     }
 
     Assert-NotRunning $GoPidFile $GoExecutable "Go service"

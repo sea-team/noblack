@@ -38,6 +38,14 @@ class WindowsLauncherContractTests(unittest.TestCase):
         self.assertNotIn("taskkill /im", source)
         self.assertNotIn("stop-process -name", source)
 
+    def test_controller_uses_single_data_word_database(self) -> None:
+        source = self.read("noblack-control.ps1")
+
+        self.assertIn('$wordsFile = Join-Path $DataDir "words.json"', source)
+        self.assertNotIn('Join-Path $Root "words.json"', source)
+        self.assertNotIn("Copy-Item", source)
+        self.assertIn("word database is missing", source)
+
     def test_watch_argument_is_one_formatted_array_item(self) -> None:
         source = self.read("noblack-control.ps1")
 
