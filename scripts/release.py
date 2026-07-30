@@ -227,19 +227,27 @@ def build_go_binary(root: Path, target: str, build_directory: Path) -> Path:
     target_config = TARGETS[target]
     goos = "windows" if target == "windows-amd64" else "linux"
     output_path = build_directory / str(target_config["go_binary"])
-    environment = os.environ.copy()
-    environment.update(
+    test_environment = os.environ.copy()
+    for target_variable in ("GOOS", "GOARCH", "CGO_ENABLED"):
+        test_environment.pop(target_variable, None)
+    test_environment.update(
         {
-            "GOOS": goos,
-            "GOARCH": "amd64",
-            "CGO_ENABLED": "0",
             "GOCACHE": str(build_directory / "go-cache"),
             "GOTMPDIR": str(build_directory / "go-tmp"),
         }
     )
-    Path(environment["GOCACHE"]).mkdir(parents=True, exist_ok=True)
-    Path(environment["GOTMPDIR"]).mkdir(parents=True, exist_ok=True)
-    run_checked(["go", "test", "./..."], root, environment)
+    Path(test_environment["GOCACHE"]).mkdir(parents=True, exist_ok=True)
+    Path(test_environment["GOTMPDIR"]).mkdir(parents=True, exist_ok=True)
+    run_checked(["go", "test", "./..."], root, test_environment)
+
+    build_environment = test_environment.copy()
+    build_environment.update(
+        {
+            "GOOS": goos,
+            "GOARCH": "amd64",
+            "CGO_ENABLED": "0",
+        }
+    )
     run_checked(
         [
             "go",
@@ -251,7 +259,7 @@ def build_go_binary(root: Path, target: str, build_directory: Path) -> Path:
             "./cmd/server",
         ],
         root,
-        environment,
+        build_environment,
     )
     return output_path
 

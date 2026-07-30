@@ -236,6 +236,32 @@ class ReleaseAssemblyTests(unittest.TestCase):
                 external.resolve(),
             )
 
+    def test_windows_cross_build_runs_tests_in_host_environment(self) -> None:
+        build_directory = Path(self.temporary_directory.name) / "build"
+        build_directory.mkdir()
+
+        with mock.patch.object(release, "run_checked") as run_checked:
+            output = release.build_go_binary(
+                self.root,
+                "windows-amd64",
+                build_directory,
+            )
+
+        self.assertEqual(output, build_directory / "noblack.exe")
+        self.assertEqual(len(run_checked.call_args_list), 2)
+        test_command, test_root, test_environment = run_checked.call_args_list[0].args
+        build_command, build_root, build_environment = run_checked.call_args_list[1].args
+        self.assertEqual(test_command, ["go", "test", "./..."])
+        self.assertEqual(test_root, self.root)
+        self.assertNotIn("GOOS", test_environment)
+        self.assertNotIn("GOARCH", test_environment)
+        self.assertNotIn("CGO_ENABLED", test_environment)
+        self.assertEqual(build_command[0:2], ["go", "build"])
+        self.assertEqual(build_root, self.root)
+        self.assertEqual(build_environment["GOOS"], "windows")
+        self.assertEqual(build_environment["GOARCH"], "amd64")
+        self.assertEqual(build_environment["CGO_ENABLED"], "0")
+
 
 if __name__ == "__main__":
     unittest.main()
