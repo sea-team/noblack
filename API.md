@@ -71,7 +71,7 @@
 | 方法 | 路径 | 作用 | 请求体 |
 |------|------|------|--------|
 | POST | `/check` | 检测文本中的敏感词 | JSON |
-| GET | `/words` | 列出全部词条 | 无 |
+| GET | `/words` | 分页查询词条 | 无 |
 | POST | `/words` | 新增一个词条 | JSON |
 | PUT | `/words/{word}` | 更新一个词条 | JSON |
 | DELETE | `/words/{word}` | 删除一个词条 | 无 |
@@ -227,13 +227,13 @@ curl -X POST http://localhost:8080/check \
 >
 > 前端在「词库管理」页有独立的令牌输入框，验证后存入浏览器 `localStorage`，不会整页拦截。
 
-### 2.1 GET /words — 列出全部词条
+### 2.1 GET /words — 分页查询词条
 
 ```bash
-curl http://localhost:8080/words
+curl "http://localhost:8080/words?page=1&page_size=50&q=赌博"
 ```
 
-响应（HTTP 200，词条按 `word` 字典序排列）：
+响应（HTTP 200，过滤后词条按 `word` 字典序排列）：
 
 ```json
 {
@@ -241,6 +241,9 @@ curl http://localhost:8080/words
   "message": "success",
   "data": {
     "count": 2,
+    "page": 1,
+    "page_size": 50,
+    "total_pages": 1,
     "words": [
       { "word": "pornhub", "levels": ["色情"],            "remarks": ["黄色平台", "成人网站"] },
       { "word": "挖矿",     "levels": ["bilibili", "引流"], "remarks": ["引流站点"] }
@@ -251,11 +254,24 @@ curl http://localhost:8080/words
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `data.count` | int | 词条总数。 |
-| `data.words[]` | array | 词条列表。 |
+| `data.count` | int | 当前查询条件下的词条总数。 |
+| `data.page` | int | 当前页码，从 1 开始。 |
+| `data.page_size` | int | 每页条数，默认 50，最大 200。 |
+| `data.total_pages` | int | 总页数；无匹配结果时为 0。 |
+| `data.words[]` | array | 当前页词条列表。 |
 | `data.words[].word` | string | 敏感词。 |
 | `data.words[].levels` | string[] | 等级列表。 |
 | `data.words[].remarks` | string[] | 备注列表。 |
+
+查询参数：
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `page` | int | 页码，默认 1；必须为正整数。超出末页时返回空列表。 |
+| `page_size` | int | 每页条数，默认 50，范围 1–200。 |
+| `q` | string | 可选关键词，匹配词条、等级或备注；英文匹配不区分大小写。 |
+
+`page` 或 `page_size` 非法时返回 HTTP 400。
 
 ### 2.2 POST /words — 新增或合并词条
 
@@ -638,7 +654,7 @@ curl http://localhost:8080/health
 | 接口 | data 结构 |
 |------|-----------|
 | `/check` | `{ has_sensitive_word: bool, matches: [{ word, levels[], remarks[], position:{start,end} }] }` |
-| `GET /words` | `{ count: int, words: [{ word, levels[], remarks[] }] }` |
+| `GET /words` | `{ count: int, page: int, page_size: int, total_pages: int, words: [{ word, levels[], remarks[] }] }` |
 | `POST/PUT /words` | `{ word, levels[], remarks[] }` |
 | `DELETE /words` | `{ word }` |
 | `/stats` | `{ check_requests, hit_requests, total_matches, reload_count, distinct_words, top_words:[{word,count}] }` |
