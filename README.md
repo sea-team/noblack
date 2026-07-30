@@ -30,7 +30,7 @@ go mod download
 go run ./cmd/server
 ```
 
-服务默认监听 `:8080`，词库默认读取当前目录下的 `words.json`。
+服务默认监听 `:8080`，词库默认读取当前目录下的 `data/words.json`。
 
 启动后可访问：
 
@@ -41,7 +41,7 @@ go run ./cmd/server
 
 ```bash
 # 指定监听地址和词库文件
-go run ./cmd/server -addr :8080 -words ./words.json
+go run ./cmd/server -addr :8080 -words ./data/words.json
 
 # 启用英文大小写忽略匹配
 go run ./cmd/server -ci
@@ -184,7 +184,7 @@ Authorization: Bearer your-secret-token
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `-addr` | `:8080` | HTTP 监听地址 |
-| `-words` | `./words.json` | 词库文件路径 |
+| `-words` | `./data/words.json` | 词库文件路径 |
 | `-watch` | `true` | 是否监听词库文件并自动重载 |
 | `-ci` | `false` | 是否忽略英文大小写 |
 | `-default-level` | `Low` | 词条未配置标签时使用的默认值 |
@@ -224,8 +224,8 @@ noblack/
 ├── internal/matcher/    # 自动机、词库解析与匹配逻辑
 ├── internal/stats/      # 运行统计与持久化
 ├── internal/store/      # 词库管理、热替换与文件监听
+├── data/words.json      # 默认及运行词库
 ├── API.md               # 完整接口文档
-├── words.json           # 默认词库
 ├── Dockerfile
 └── docker-compose.yml
 ```
