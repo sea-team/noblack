@@ -62,7 +62,8 @@ class ReleaseValidationTests(unittest.TestCase):
         self.assertEqual(result, 5)
 
     def test_validate_release_inputs_checks_production_models_and_words(self) -> None:
-        words = self.root / "words.json"
+        words = self.root / "data" / "words.json"
+        words.parent.mkdir()
         words.write_text('{"words":[]}\n', encoding="utf-8")
         checksums: dict[str, dict[str, int | str]] = {}
         for model_name, content in (
@@ -95,12 +96,13 @@ class ReleaseValidationTests(unittest.TestCase):
         self.assertEqual(result["words_size"], words.stat().st_size)
 
     def test_validate_release_inputs_rejects_repository_words_duplicate(self) -> None:
-        (self.root / "words.json").write_text(
+        words = self.root / "data" / "words.json"
+        words.parent.mkdir()
+        words.write_text(
             '{"words":[]}\n',
             encoding="utf-8",
         )
-        duplicate = self.root / "data" / "words.json"
-        duplicate.parent.mkdir()
+        duplicate = self.root / "words.json"
         duplicate.write_text('{"words":[]}\n', encoding="utf-8")
         packaging = self.root / "packaging"
         packaging.mkdir()
@@ -111,7 +113,7 @@ class ReleaseValidationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             ValueError,
-            "duplicate word database",
+            "root word database",
         ):
             release.validate_release_inputs(self.root)
 
@@ -122,7 +124,9 @@ class ReleaseAssemblyTests(unittest.TestCase):
         self.root = Path(self.temporary_directory.name) / "source"
         self.output = Path(self.temporary_directory.name) / "output"
         self.root.mkdir()
-        (self.root / "words.json").write_text('{"words":[]}\n', encoding="utf-8")
+        words = self.root / "data" / "words.json"
+        words.parent.mkdir()
+        words.write_text('{"words":[]}\n', encoding="utf-8")
         for model_name in (
             "lite-baseline",
             "lite-production-v1",
@@ -172,6 +176,8 @@ class ReleaseAssemblyTests(unittest.TestCase):
         )
         self.assertFalse((self.output / "models/lite-baseline").exists())
         self.assertFalse((self.output / "models/macbert-pilot").exists())
+        self.assertTrue((self.output / "data/words.json").is_file())
+        self.assertFalse((self.output / "words.json").exists())
 
     def test_manifest_is_stable_and_excludes_itself(self) -> None:
         self.output.mkdir()

@@ -78,14 +78,14 @@ def validate_release_inputs(root: Path) -> dict[str, int]:
         if not model_config.is_file():
             raise FileNotFoundError(f"missing model config: {model_config}")
 
-    words_path = root / "words.json"
+    words_path = root / "data" / "words.json"
     if not words_path.is_file():
         raise FileNotFoundError(f"missing word database: {words_path}")
-    duplicate_words_path = root / "data" / "words.json"
-    if duplicate_words_path.is_file():
+    root_words_path = root / "words.json"
+    if root_words_path.exists():
         raise ValueError(
-            f"duplicate word database: remove {duplicate_words_path}; "
-            f"use {words_path} as the repository source"
+            "root word database is not allowed; "
+            f"use data/words.json: {root_words_path}"
         )
     return {
         "model_count": len(checksums),
@@ -126,7 +126,10 @@ def assemble_package(
 
     shutil.copy2(go_binary, output_directory / str(target_config["go_binary"]))
     shutil.copy2(model_binary, output_directory / str(target_config["model_binary"]))
-    shutil.copy2(root / "words.json", output_directory / "words.json")
+
+    data_output = output_directory / "data"
+    data_output.mkdir()
+    shutil.copy2(root / "data" / "words.json", data_output / "words.json")
 
     models_output = output_directory / "models"
     for model_name in PRODUCTION_MODELS:
@@ -143,7 +146,6 @@ def assemble_package(
             if target == "linux-amd64":
                 destination.chmod(destination.stat().st_mode | 0o111)
 
-    (output_directory / "data").mkdir()
     (output_directory / "logs").mkdir()
     write_manifest(output_directory)
     if target == "linux-amd64":
