@@ -1,6 +1,8 @@
 package api
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -24,6 +26,16 @@ func newTestHandler(t *testing.T, token string) *Handler {
 	}
 	st := store.New(path, entries, matcher.Options{})
 	return NewHandler(st, stats.New(), token)
+}
+
+func newHandlerWithEntries(t *testing.T, entries []matcher.Entry) *Handler {
+	t.Helper()
+	dir := t.TempDir()
+	path := dir + "/words.json"
+	if err := matcher.SaveEntries(path, entries); err != nil {
+		t.Fatal(err)
+	}
+	return NewHandler(store.New(path, entries, matcher.Options{}), stats.New(), "")
 }
 
 func do(h *Handler, method, path, body string, headers map[string]string) *httptest.ResponseRecorder {
@@ -76,6 +88,75 @@ func TestAuth_ReadsAlwaysOpen(t *testing.T) {
 	// /stats 不需令牌
 	if rec := do(h, "GET", "/stats", "", nil); rec.Code != 200 {
 		t.Errorf("/stats 应 200, 实际 %d", rec.Code)
+	}
+}
+
+func TestWordsGetUsesServerPaginationAndSearch(t *testing.T) {
+	entries := make([]matcher.Entry, 0, 60)
+	for index := 60; index >= 1; index-- {
+		entry := matcher.Entry{Word: fmt.Sprintf("word-%02d", index), Levels: []string{"common"}}
+		if index == 23 {
+			entry.Remarks = []string{"special remark"}
+		}
+		entries = append(entries, entry)
+	}
+	h := newHandlerWithEntries(t, entries)
+
+	type wordsData struct {
+		Words      []matcher.Entry `json:"words"`
+		Count      int             `json:"count"`
+		Page       int             `json:"page"`
+		PageSize   int             `json:"page_size"`
+		TotalPages int             `json:"total_pages"`
+	}
+	getData := func(path string) (int, wordsData) {
+		rec := do(h, http.MethodGet, path, "", nil)
+		var response struct {
+			Data wordsData `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode %s: %v; body=%s", path, err, rec.Body)
+		}
+		return rec.Code, response.Data
+	}
+
+	status, data := getData("/words")
+	if status != http.StatusOK || len(data.Words) != 50 || data.Count != 60 ||
+		data.Page != 1 || data.PageSize != 50 || data.TotalPages != 2 {
+		t.Fatalf("default page status=%d data=%+v", status, data)
+	}
+	if data.Words[0].Word != "word-01" || data.Words[49].Word != "word-50" {
+		t.Fatalf("default page words=%q..%q", data.Words[0].Word, data.Words[49].Word)
+	}
+
+	status, data = getData("/words?page=2&page_size=20")
+	if status != http.StatusOK || len(data.Words) != 20 || data.Page != 2 || data.PageSize != 20 || data.TotalPages != 3 {
+		t.Fatalf("custom page status=%d data=%+v", status, data)
+	}
+	if data.Words[0].Word != "word-21" || data.Words[19].Word != "word-40" {
+		t.Fatalf("custom page words=%q..%q", data.Words[0].Word, data.Words[19].Word)
+	}
+
+	status, data = getData("/words?page_size=10&q=SPECIAL")
+	if status != http.StatusOK || data.Count != 1 || len(data.Words) != 1 || data.Words[0].Word != "word-23" {
+		t.Fatalf("search result status=%d data=%+v", status, data)
+	}
+}
+
+func TestWordsGetRejectsInvalidPagination(t *testing.T) {
+	h := newTestHandler(t, "")
+	for _, path := range []string{
+		"/words?page=0",
+		"/words?page=-1",
+		"/words?page=abc",
+		"/words?page_size=0",
+		"/words?page_size=201",
+		"/words?page_size=abc",
+	} {
+		rec := do(h, http.MethodGet, path, "", nil)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("GET %s status=%d body=%s, want 400", path, rec.Code, rec.Body)
+		}
 	}
 }
 
@@ -206,6 +287,23 @@ func TestIndexDoesNotEmbedWordsInInlineHandlers(t *testing.T) {
 	}
 	if !strings.Contains(body, `data-word-action="edit"`) || !strings.Contains(body, `addEventListener('click'`) {
 		t.Fatalf("未找到安全的事件委托实现")
+	}
+}
+
+func TestIndexUsesServerWordPagination(t *testing.T) {
+	h := newTestHandler(t, "")
+	rec := do(h, http.MethodGet, "/", "", nil)
+	body := rec.Body.String()
+	for _, marker := range []string{
+		`id="w-first"`, `id="w-prev"`, `id="w-page-info"`, `id="w-next"`, `id="w-last"`,
+		`id="w-page-size"`, `new URLSearchParams`, `page_size`, `scheduleWordSearch()`, `300`,
+	} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("分页页面缺少标记 %q", marker)
+		}
+	}
+	if strings.Contains(body, "ALL_WORDS") || strings.Contains(body, "RENDERED_WORDS") {
+		t.Fatal("前端仍会保存或筛选完整词库")
 	}
 }
 

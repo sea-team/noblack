@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"noblack/internal/matcher"
@@ -28,7 +29,21 @@ type Handler struct {
 const (
 	normalRequestBodyLimit  = 3 << 20
 	maximumRequestBodyLimit = 10 << 20
+	defaultWordsPageSize    = 50
+	maximumWordsPageSize    = 200
 )
+
+func positiveQueryInt(r *http.Request, name string, defaultValue, maximum int) (int, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get(name))
+	if raw == "" {
+		return defaultValue, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 1 || (maximum > 0 && value > maximum) {
+		return 0, errors.New(name + " 必须是有效的正整数")
+	}
+	return value, nil
+}
 
 // NewHandler 创建 Handler。token 为空时词条写操作不鉴权 (向后兼容)。
 func NewHandler(s *store.Store, m *stats.Collector, token string) *Handler {
@@ -317,10 +332,27 @@ func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleWords(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		entries := h.store.ListEntries()
+		page, err := positiveQueryInt(r, "page", 1, 0)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		pageSize, err := positiveQueryInt(r, "page_size", defaultWordsPageSize, maximumWordsPageSize)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		result := h.store.ListEntriesPage(page, pageSize, r.URL.Query().Get("q"))
+		totalPages := 0
+		if result.Total > 0 {
+			totalPages = (result.Total + pageSize - 1) / pageSize
+		}
 		writeJSON(w, http.StatusOK, apiResponse{
 			Code: 200, Message: "success",
-			Data: map[string]interface{}{"words": entries, "count": len(entries)},
+			Data: map[string]interface{}{
+				"words": result.Entries, "count": result.Total,
+				"page": page, "page_size": pageSize, "total_pages": totalPages,
+			},
 		})
 	case http.MethodPost:
 		if !h.requireAuth(w, r) { // 写操作: 需令牌

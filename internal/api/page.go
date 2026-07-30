@@ -104,10 +104,20 @@ const indexHTML = `<!DOCTYPE html>
     <div class="card">
       <div class="row" style="justify-content:space-between">
         <h3 style="margin:0">词库列表 (<span id="w-count">0</span>)</h3>
-        <input id="w-filter" placeholder="筛选…" style="max-width:200px" oninput="renderWords()">
+        <input id="w-filter" placeholder="筛选…" style="max-width:200px" oninput="scheduleWordSearch()">
       </div>
       <table><thead><tr><th>敏感词</th><th>等级</th><th>备注</th><th style="width:120px">操作</th></tr></thead>
       <tbody id="w-tbody"></tbody></table>
+      <div class="row" style="justify-content:center;margin-top:12px">
+        <button class="ghost sm" id="w-first" onclick="goWordPage(1)">首页</button>
+        <button class="ghost sm" id="w-prev" onclick="goWordPage(WORD_PAGE-1)">上一页</button>
+        <span class="muted" id="w-page-info">第 1 / 1 页</span>
+        <button class="ghost sm" id="w-next" onclick="goWordPage(WORD_PAGE+1)">下一页</button>
+        <button class="ghost sm" id="w-last" onclick="goWordPage(WORD_TOTAL_PAGES)">末页</button>
+        <select id="w-page-size" onchange="changeWordPageSize(this.value)" style="width:auto">
+          <option value="20">20 条/页</option><option value="50" selected>50 条/页</option><option value="100">100 条/页</option>
+        </select>
+      </div>
     </div>
   </section>
 
@@ -218,17 +228,24 @@ function renderCheck(text, d){
 }
 
 // ---- 词库 ----
-let ALL_WORDS=[];
-let RENDERED_WORDS=[];
+let PAGE_WORDS=[];
+let WORD_PAGE=1, WORD_PAGE_SIZE=50, WORD_TOTAL=0, WORD_TOTAL_PAGES=0;
+let WORD_LOADING=false, WORD_SEARCH_TIMER=null, WORD_REQUEST_ID=0;
 async function loadWords(){
   checkAuth(); // 决定是否显示令牌框
-  try{ const d=await api('/words'); ALL_WORDS=d.words||[]; $('#w-count').textContent=d.count; renderWords(); }
-  catch(e){ toast(e.message,true); }
+  const requestId=++WORD_REQUEST_ID; WORD_LOADING=true; updateWordPager();
+  try{
+    const params=new URLSearchParams({page:String(WORD_PAGE),page_size:String(WORD_PAGE_SIZE)});
+    const filter=$('#w-filter').value.trim(); if(filter) params.set('q',filter);
+    const d=await api('/words?'+params.toString());
+    if(requestId!==WORD_REQUEST_ID)return;
+    PAGE_WORDS=d.words||[]; WORD_TOTAL=Number(d.count)||0; WORD_TOTAL_PAGES=Number(d.total_pages)||0;
+    WORD_PAGE=Number(d.page)||WORD_PAGE; renderWords(); updateWordPager();
+  }catch(e){ if(requestId===WORD_REQUEST_ID)toast(e.message,true); }
+  finally{ if(requestId===WORD_REQUEST_ID){ WORD_LOADING=false; updateWordPager(); } }
 }
 function renderWords(){
-  const f=$('#w-filter').value.trim();
-  RENDERED_WORDS = f? ALL_WORDS.filter(w=>w.word.includes(f)||w.levels.join().includes(f)) : ALL_WORDS;
-  $('#w-tbody').innerHTML = RENDERED_WORDS.map((w,i)=>'<tr>'+
+  $('#w-tbody').innerHTML = PAGE_WORDS.map((w,i)=>'<tr>'+
     '<td><b>'+esc(w.word)+'</b></td>'+
     '<td>'+w.levels.map(l=>'<span class="tag '+lvlClass(l)+'">'+esc(l)+'</span>').join('')+'</td>'+
     '<td>'+(w.remarks.length?w.remarks.map(r=>'<span class="tag remark">'+esc(r)+'</span>').join(''):'<span class="muted">&mdash;</span>')+'</td>'+
@@ -238,11 +255,21 @@ function renderWords(){
 $('#w-tbody').addEventListener('click',e=>{
   const btn=e.target.closest('button[data-word-action]');
   if(!btn)return;
-  const w=RENDERED_WORDS[Number(btn.dataset.wordIndex)];
+  const w=PAGE_WORDS[Number(btn.dataset.wordIndex)];
   if(!w)return;
   if(btn.dataset.wordAction==='edit')editWord(w);
   else if(btn.dataset.wordAction==='delete')delWord(w.word);
 });
+function scheduleWordSearch(){ clearTimeout(WORD_SEARCH_TIMER); WORD_SEARCH_TIMER=setTimeout(()=>{ WORD_PAGE=1; loadWords(); },300); }
+function goWordPage(page){ const max=Math.max(1,WORD_TOTAL_PAGES); if(WORD_LOADING||page<1||page>max||page===WORD_PAGE)return; WORD_PAGE=page; loadWords(); }
+function changeWordPageSize(size){ const parsed=Number(size); if(![20,50,100].includes(parsed))return; WORD_PAGE_SIZE=parsed; WORD_PAGE=1; loadWords(); }
+function updateWordPager(){
+  const pages=Math.max(1,WORD_TOTAL_PAGES), page=Math.min(Math.max(1,WORD_PAGE),pages);
+  $('#w-count').textContent=WORD_TOTAL; $('#w-page-info').textContent='第 '+page+' / '+pages+' 页';
+  $('#w-first').disabled=$('#w-prev').disabled=WORD_LOADING||page<=1;
+  $('#w-next').disabled=$('#w-last').disabled=WORD_LOADING||WORD_TOTAL_PAGES===0||page>=WORD_TOTAL_PAGES;
+  $('#w-page-size').disabled=WORD_LOADING;
+}
 let EDITING=null;
 function editWord(w){
   EDITING=w.word; $('#w-word').value=w.word;
@@ -277,15 +304,15 @@ async function saveWord(){
         toast('已更新 (敏感词已变更)');
       }
     }
-    resetWordForm(); loadWords();
+    resetWordForm(); await loadWords();
   }catch(e){ toast(e.message,true); }
 }
 async function delWord(word){
   if(!confirm('确定删除 "'+word+'" ?')) return;
-  try{ await api('/words/'+encodeURIComponent(word),{method:'DELETE',headers:authHeaders()}); toast('已删除'); loadWords(); }
+  try{ await api('/words/'+encodeURIComponent(word),{method:'DELETE',headers:authHeaders()}); toast('已删除'); if(PAGE_WORDS.length===1&&WORD_PAGE>1)WORD_PAGE--; await loadWords(); }
   catch(e){ toast(e.message,true); }
 }
-async function reload(){ try{ const d=await api('/reload',{method:'POST',headers:authHeaders()}); toast('已从文件重载 '+d.word_count+' 词'); loadWords(); }catch(e){ toast(e.message,true);} }
+async function reload(){ try{ const d=await api('/reload',{method:'POST',headers:authHeaders()}); toast('已从文件重载 '+d.word_count+' 词'); await loadWords(); }catch(e){ toast(e.message,true);} }
 
 // ---- 统计 ----
 async function loadStats(){
