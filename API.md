@@ -270,6 +270,7 @@ curl "http://localhost:8080/words?page=1&page_size=50&q=赌博"
 | `page` | int | 页码，默认 1；必须为正整数。超出末页时返回空列表。 |
 | `page_size` | int | 每页条数，默认 50，范围 1–200。 |
 | `q` | string | 可选关键词，匹配词条、等级或备注；英文匹配不区分大小写。 |
+| `match` | string | 匹配方式：`contains` 模糊（默认）、`exact` 完全、`prefix` 前缀、`suffix` 后缀。 |
 
 `page` 或 `page_size` 非法时返回 HTTP 400。
 
@@ -419,10 +420,12 @@ curl -X POST http://localhost:8080/auth/verify -H "X-Auth-Token: s3cret"
 
 | 参数 | 类型 | 默认 | 说明 |
 |------|------|------|------|
-| `top` | int | 20 | 返回命中最多的前 N 个词。非正数忽略、用默认值。 |
+| `page` | int | 1 | 高频词页码，必须为正整数。 |
+| `page_size` | int | 20 | 每页条数，范围 1–200。 |
+| `top` | int | — | 兼容旧调用，等同于 `page_size`。 |
 
 ```bash
-curl "http://localhost:8080/stats?top=5"
+curl "http://localhost:8080/stats?page=1&page_size=20"
 ```
 
 **响应（HTTP 200）**
@@ -437,6 +440,9 @@ curl "http://localhost:8080/stats?top=5"
     "total_matches": 4,
     "reload_count": 0,
     "distinct_words": 2,
+    "page": 1,
+    "page_size": 20,
+    "total_pages": 1,
     "top_words": [
       { "word": "测试词", "count": 3 },
       { "word": "挖矿",   "count": 1 }
@@ -455,6 +461,9 @@ curl "http://localhost:8080/stats?top=5"
 | `data.top_words[]` | array | 命中最多的词，按 `count` 降序（同数按词字典序）。 |
 | `data.top_words[].word` | string | 敏感词。 |
 | `data.top_words[].count` | int | 该词累计命中次数。 |
+| `data.page` | int | 当前高频词页码。 |
+| `data.page_size` | int | 当前页条数。 |
+| `data.total_pages` | int | 高频词总页数。 |
 
 ### 3.2 POST /stats/reset — 清零统计
 
@@ -657,7 +666,7 @@ curl http://localhost:8080/health
 | `GET /words` | `{ count: int, page: int, page_size: int, total_pages: int, words: [{ word, levels[], remarks[] }] }` |
 | `POST/PUT /words` | `{ word, levels[], remarks[] }` |
 | `DELETE /words` | `{ word }` |
-| `/stats` | `{ check_requests, hit_requests, total_matches, reload_count, distinct_words, top_words:[{word,count}] }` |
+| `/stats` | `{ check_requests, hit_requests, total_matches, reload_count, distinct_words, page, page_size, total_pages, top_words:[{word,count}] }` |
 | `/reload` | `{ word_count: int }` |
 | `/levels` | `{ levels: string[], count: int }` |
 | `/health` | `{ word_count: int, levels: string[] }` |

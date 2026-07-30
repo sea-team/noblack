@@ -56,6 +56,20 @@ func TestListEntriesPageSortsFiltersAndPaginates(t *testing.T) {
 			t.Fatalf("query %q result = %+v, want one entry %q", tc.query, result, tc.want)
 		}
 	}
+	for _, tc := range []struct {
+		mode string
+		want string
+	}{
+		{mode: "exact", want: "Alpha"},
+		{mode: "prefix", want: "Alpha"},
+		{mode: "suffix", want: "bravo"},
+	} {
+		query := map[string]string{"exact": "alpha", "prefix": "alp", "suffix": "avo"}[tc.mode]
+		result := s.ListEntriesPageMatch(1, 10, query, tc.mode)
+		if result.Total != 1 || result.Entries[0].Word != tc.want {
+			t.Fatalf("mode %q result = %+v, want %q", tc.mode, result, tc.want)
+		}
+	}
 
 	beyond := s.ListEntriesPage(3, 2, "")
 	if beyond.Total != 4 || beyond.Entries == nil || len(beyond.Entries) != 0 {

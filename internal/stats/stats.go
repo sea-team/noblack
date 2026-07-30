@@ -74,6 +74,36 @@ type Snapshot struct {
 	ReloadCount   int64       `json:"reload_count"`
 	DistinctWords int         `json:"distinct_words"` // 曾命中过的不同词数量
 	TopWords      []WordCount `json:"top_words"`      // 命中最多的词 (降序)
+	Page          int         `json:"page,omitempty"`
+	PageSize      int         `json:"page_size,omitempty"`
+	TotalPages    int         `json:"total_pages,omitempty"`
+}
+
+// SnapshotPage returns one page of the complete ranked word list.
+func (c *Collector) SnapshotPage(page, pageSize int) Snapshot {
+	snapshot := c.Snapshot(0)
+	total := len(snapshot.TopWords)
+	if page < 1 || pageSize < 1 {
+		snapshot.Page, snapshot.PageSize = page, pageSize
+		snapshot.TopWords = []WordCount{}
+		return snapshot
+	}
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + pageSize - 1) / pageSize
+	}
+	snapshot.Page, snapshot.PageSize, snapshot.TotalPages = page, pageSize, totalPages
+	start := (page - 1) * pageSize
+	if start >= total {
+		snapshot.TopWords = []WordCount{}
+		return snapshot
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	snapshot.TopWords = snapshot.TopWords[start:end]
+	return snapshot
 }
 
 // Snapshot 生成当前统计快照。topN <= 0 时返回全部词。

@@ -342,7 +342,15 @@ func (h *Handler) handleWords(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		result := h.store.ListEntriesPage(page, pageSize, r.URL.Query().Get("q"))
+		match := r.URL.Query().Get("match")
+		if match == "" {
+			match = "contains"
+		}
+		if match != "contains" && match != "exact" && match != "prefix" && match != "suffix" {
+			writeErr(w, http.StatusBadRequest, "match 必须是 contains、exact、prefix 或 suffix")
+			return
+		}
+		result := h.store.ListEntriesPageMatch(page, pageSize, r.URL.Query().Get("q"), match)
 		totalPages := 0
 		if result.Total > 0 {
 			totalPages = (result.Total + pageSize - 1) / pageSize
@@ -446,14 +454,23 @@ func (h *Handler) handleWordByID(w http.ResponseWriter, r *http.Request) {
 // ---------- /stats ----------
 
 func (h *Handler) handleStats(w http.ResponseWriter, r *http.Request) {
-	// 支持 ?top=N 限制返回的高频词数量, 默认 20。
-	topN := 20
-	if v := r.URL.Query().Get("top"); v != "" {
-		if n, err := parsePositiveInt(v); err == nil {
-			topN = n
-		}
+	page, err := positiveQueryInt(r, "page", 1, 0)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
 	}
-	snap := h.metrics.Snapshot(topN)
+	pageSize := 20
+	if r.URL.Query().Get("page_size") != "" {
+		pageSize, err = positiveQueryInt(r, "page_size", pageSize, 200)
+	} else if r.URL.Query().Get("top") != "" {
+		// 兼容旧版 top=N：把 N 作为每页条数。
+		pageSize, err = positiveQueryInt(r, "top", pageSize, 200)
+	}
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	snap := h.metrics.SnapshotPage(page, pageSize)
 	writeJSON(w, http.StatusOK, apiResponse{Code: 200, Message: "success", Data: snap})
 }
 

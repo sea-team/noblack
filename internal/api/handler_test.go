@@ -141,6 +141,46 @@ func TestWordsGetUsesServerPaginationAndSearch(t *testing.T) {
 	if status != http.StatusOK || data.Count != 1 || len(data.Words) != 1 || data.Words[0].Word != "word-23" {
 		t.Fatalf("search result status=%d data=%+v", status, data)
 	}
+	status, data = getData("/words?page_size=10&q=WORD-2&match=exact")
+	if status != http.StatusOK || data.Count != 0 {
+		t.Fatalf("exact search status=%d data=%+v", status, data)
+	}
+	status, data = getData("/words?page_size=10&q=WORD-2&match=prefix")
+	if status != http.StatusOK || data.Count != 10 || data.Words[0].Word != "word-20" {
+		t.Fatalf("prefix search status=%d data=%+v", status, data)
+	}
+}
+
+func TestStatsGetUsesServerPagination(t *testing.T) {
+	h := newTestHandler(t, "")
+	for index := 5; index >= 1; index-- {
+		for count := 0; count < index; count++ {
+			h.metrics.RecordCheck([]string{fmt.Sprintf("word-%d", index)})
+		}
+	}
+	rec := do(h, http.MethodGet, "/stats?page=2&page_size=2", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /stats status=%d body=%s", rec.Code, rec.Body)
+	}
+	var response struct {
+		Data stats.Snapshot `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Data.Page != 2 || response.Data.PageSize != 2 || response.Data.TotalPages != 3 ||
+		len(response.Data.TopWords) != 2 || response.Data.TopWords[0].Word != "word-3" {
+		t.Fatalf("stats page=%+v", response.Data)
+	}
+}
+
+func TestStatsGetRejectsInvalidPagination(t *testing.T) {
+	h := newTestHandler(t, "")
+	for _, path := range []string{"/stats?page=0", "/stats?page_size=0", "/stats?page_size=201"} {
+		if rec := do(h, http.MethodGet, path, "", nil); rec.Code != http.StatusBadRequest {
+			t.Errorf("GET %s status=%d, want 400", path, rec.Code)
+		}
+	}
 }
 
 func TestWordsGetRejectsInvalidPagination(t *testing.T) {
@@ -152,6 +192,7 @@ func TestWordsGetRejectsInvalidPagination(t *testing.T) {
 		"/words?page_size=0",
 		"/words?page_size=201",
 		"/words?page_size=abc",
+		"/words?match=unknown",
 	} {
 		rec := do(h, http.MethodGet, path, "", nil)
 		if rec.Code != http.StatusBadRequest {
@@ -296,7 +337,8 @@ func TestIndexUsesServerWordPagination(t *testing.T) {
 	body := rec.Body.String()
 	for _, marker := range []string{
 		`id="w-first"`, `id="w-prev"`, `id="w-page-info"`, `id="w-next"`, `id="w-last"`,
-		`id="w-page-size"`, `new URLSearchParams`, `page_size`, `scheduleWordSearch()`, `300`,
+		`id="w-page-size"`, `id="w-match"`, `模糊匹配`, `id="stat-first"`, `id="stat-page-info"`,
+		`new URLSearchParams`, `page_size`, `scheduleWordSearch()`, `300`,
 	} {
 		if !strings.Contains(body, marker) {
 			t.Fatalf("分页页面缺少标记 %q", marker)

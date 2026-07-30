@@ -105,6 +105,10 @@ const indexHTML = `<!DOCTYPE html>
       <div class="row" style="justify-content:space-between">
         <h3 style="margin:0">词库列表 (<span id="w-count">0</span>)</h3>
         <input id="w-filter" placeholder="筛选…" style="max-width:200px" oninput="scheduleWordSearch()">
+        <select id="w-match" onchange="changeWordMatch(this.value)" style="width:auto">
+          <option value="contains" selected>模糊匹配</option><option value="exact">完全匹配</option>
+          <option value="prefix">前缀匹配</option><option value="suffix">后缀匹配</option>
+        </select>
       </div>
       <table><thead><tr><th>敏感词</th><th>等级</th><th>备注</th><th style="width:120px">操作</th></tr></thead>
       <tbody id="w-tbody"></tbody></table>
@@ -132,9 +136,21 @@ const indexHTML = `<!DOCTYPE html>
       <div class="stat-grid" id="stat-boxes"></div>
     </div>
     <div class="card">
-      <h3>🔥 触发最多的敏感词</h3>
+      <div class="row" style="justify-content:space-between">
+        <h3 style="margin:0">🔥 触发最多的敏感词</h3>
+        <span class="muted" id="stat-page-info">第 1 / 1 页</span>
+      </div>
       <table><thead><tr><th style="width:60px">#</th><th>敏感词</th><th style="width:160px">命中次数</th></tr></thead>
       <tbody id="stat-tbody"></tbody></table>
+      <div class="row" style="justify-content:center;margin-top:12px">
+        <button class="ghost sm" id="stat-first" onclick="goStatPage(1)">首页</button>
+        <button class="ghost sm" id="stat-prev" onclick="goStatPage(STAT_PAGE-1)">上一页</button>
+        <button class="ghost sm" id="stat-next" onclick="goStatPage(STAT_PAGE+1)">下一页</button>
+        <button class="ghost sm" id="stat-last" onclick="goStatPage(STAT_TOTAL_PAGES)">末页</button>
+        <select id="stat-page-size" onchange="changeStatPageSize(this.value)" style="width:auto">
+          <option value="10">10 条/页</option><option value="20" selected>20 条/页</option><option value="50">50 条/页</option>
+        </select>
+      </div>
       <p class="muted" id="stat-empty" style="display:none">暂无命中记录，去「检测」页试试。</p>
     </div>
   </section>
@@ -237,6 +253,7 @@ async function loadWords(){
   try{
     const params=new URLSearchParams({page:String(WORD_PAGE),page_size:String(WORD_PAGE_SIZE)});
     const filter=$('#w-filter').value.trim(); if(filter) params.set('q',filter);
+    params.set('match',$('#w-match').value);
     const d=await api('/words?'+params.toString());
     if(requestId!==WORD_REQUEST_ID)return;
     PAGE_WORDS=d.words||[]; WORD_TOTAL=Number(d.count)||0; WORD_TOTAL_PAGES=Number(d.total_pages)||0;
@@ -261,6 +278,7 @@ $('#w-tbody').addEventListener('click',e=>{
   else if(btn.dataset.wordAction==='delete')delWord(w.word);
 });
 function scheduleWordSearch(){ clearTimeout(WORD_SEARCH_TIMER); WORD_SEARCH_TIMER=setTimeout(()=>{ WORD_PAGE=1; loadWords(); },300); }
+function changeWordMatch(mode){ if(!['contains','exact','prefix','suffix'].includes(mode))return; WORD_PAGE=1; loadWords(); }
 function goWordPage(page){ const max=Math.max(1,WORD_TOTAL_PAGES); if(WORD_LOADING||page<1||page>max||page===WORD_PAGE)return; WORD_PAGE=page; loadWords(); }
 function changeWordPageSize(size){ const parsed=Number(size); if(![20,50,100].includes(parsed))return; WORD_PAGE_SIZE=parsed; WORD_PAGE=1; loadWords(); }
 function updateWordPager(){
@@ -315,8 +333,10 @@ async function delWord(word){
 async function reload(){ try{ const d=await api('/reload',{method:'POST',headers:authHeaders()}); toast('已从文件重载 '+d.word_count+' 词'); await loadWords(); }catch(e){ toast(e.message,true);} }
 
 // ---- 统计 ----
+let STAT_PAGE=1, STAT_PAGE_SIZE=20, STAT_TOTAL_PAGES=0, STAT_LOADING=false;
 async function loadStats(){
-  try{ const d=await api('/stats?top=30');
+  STAT_LOADING=true; updateStatPager();
+  try{ const d=await api('/stats?page='+STAT_PAGE+'&page_size='+STAT_PAGE_SIZE);
     $('#stat-boxes').innerHTML=[
       ['检测请求数',d.check_requests],['命中请求数',d.hit_requests],
       ['累计命中词次',d.total_matches],['不同命中词',d.distinct_words]
@@ -324,8 +344,18 @@ async function loadStats(){
     const tb=$('#stat-tbody');
     if(!d.top_words||!d.top_words.length){ tb.innerHTML=''; $('#stat-empty').style.display='block'; }
     else{ $('#stat-empty').style.display='none';
-      tb.innerHTML=d.top_words.map((w,i)=>'<tr><td>'+(i+1)+'</td><td><b>'+esc(w.word)+'</b></td><td>'+w.count+'</td></tr>').join(''); }
-  }catch(e){ toast(e.message,true); }
+      tb.innerHTML=d.top_words.map((w,i)=>'<tr><td>'+((d.page-1)*d.page_size+i+1)+'</td><td><b>'+esc(w.word)+'</b></td><td>'+w.count+'</td></tr>').join(''); }
+    STAT_PAGE=Number(d.page)||STAT_PAGE; STAT_TOTAL_PAGES=Number(d.total_pages)||0; updateStatPager();
+  }catch(e){ toast(e.message,true); } finally{ STAT_LOADING=false; updateStatPager(); }
+}
+function goStatPage(page){ const max=Math.max(1,STAT_TOTAL_PAGES); if(STAT_LOADING||page<1||page>max||page===STAT_PAGE)return; STAT_PAGE=page; loadStats(); }
+function changeStatPageSize(size){ const parsed=Number(size); if(![10,20,50].includes(parsed))return; STAT_PAGE_SIZE=parsed; STAT_PAGE=1; loadStats(); }
+function updateStatPager(){
+  const pages=Math.max(1,STAT_TOTAL_PAGES), page=Math.min(Math.max(1,STAT_PAGE),pages);
+  $('#stat-page-info').textContent='第 '+page+' / '+pages+' 页';
+  $('#stat-first').disabled=$('#stat-prev').disabled=STAT_LOADING||page<=1;
+  $('#stat-next').disabled=$('#stat-last').disabled=STAT_LOADING||STAT_TOTAL_PAGES===0||page>=STAT_TOTAL_PAGES;
+  $('#stat-page-size').disabled=STAT_LOADING;
 }
 async function resetStats(){ if(!confirm('清零所有统计?'))return; try{ await api('/stats/reset',{method:'POST',headers:authHeaders()}); toast('已清零'); loadStats(); }catch(e){ toast(e.message,true);} }
 

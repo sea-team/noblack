@@ -103,6 +103,12 @@ func (s *Store) ListEntries() []matcher.Entry {
 // ListEntriesPage returns one sorted page without holding the store lock while
 // filtering, sorting, or slicing the snapshot.
 func (s *Store) ListEntriesPage(page, pageSize int, query string) EntryPage {
+	return s.ListEntriesPageMatch(page, pageSize, query, "contains")
+}
+
+// ListEntriesPageMatch returns one sorted page using the requested word match mode.
+// Supported modes are contains, exact, prefix, and suffix.
+func (s *Store) ListEntriesPageMatch(page, pageSize int, query, match string) EntryPage {
 	s.mu.Lock()
 	snapshot := cloneEntries(s.entries)
 	s.mu.Unlock()
@@ -110,7 +116,7 @@ func (s *Store) ListEntriesPage(page, pageSize int, query string) EntryPage {
 	query = strings.ToLower(strings.TrimSpace(query))
 	filtered := make([]matcher.Entry, 0, len(snapshot))
 	for _, entry := range snapshot {
-		if query != "" && !entryMatchesQuery(entry, query) {
+		if query != "" && !entryMatchesQuery(entry, query, match) {
 			continue
 		}
 		filtered = append(filtered, entry)
@@ -132,17 +138,31 @@ func (s *Store) ListEntriesPage(page, pageSize int, query string) EntryPage {
 	return EntryPage{Entries: cloneEntries(filtered[start:end]), Total: total}
 }
 
-func entryMatchesQuery(entry matcher.Entry, query string) bool {
-	if strings.Contains(strings.ToLower(entry.Word), query) {
+func entryMatchesQuery(entry matcher.Entry, query, match string) bool {
+	word := strings.ToLower(entry.Word)
+	matchValue := func(value string) bool {
+		value = strings.ToLower(value)
+		switch match {
+		case "exact":
+			return value == query
+		case "prefix":
+			return strings.HasPrefix(value, query)
+		case "suffix":
+			return strings.HasSuffix(value, query)
+		default:
+			return strings.Contains(value, query)
+		}
+	}
+	if matchValue(word) {
 		return true
 	}
 	for _, value := range entry.Levels {
-		if strings.Contains(strings.ToLower(value), query) {
+		if matchValue(value) {
 			return true
 		}
 	}
 	for _, value := range entry.Remarks {
-		if strings.Contains(strings.ToLower(value), query) {
+		if matchValue(value) {
 			return true
 		}
 	}
