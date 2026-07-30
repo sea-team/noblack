@@ -153,7 +153,7 @@ def main() -> int:
                 "-addr",
                 f":{args.port}",
                 "-words",
-                "./words.json",
+                "./data/words.json",
                 "-model-service-url",
                 go_model_url,
             ],

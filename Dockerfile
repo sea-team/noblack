@@ -33,7 +33,7 @@ RUN python -m pip install --no-cache-dir \
     && python -m pip install --no-cache-dir -r /tmp/model-requirements.txt
 
 COPY --from=go-build /out/noblack /app/noblack
-COPY words.json /app/words.default.json
+COPY data/words.json /app/words.default.json
 COPY docker-entrypoint.sh /app/entrypoint.sh
 COPY model_service /app/model_service
 COPY models /app/models

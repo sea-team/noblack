@@ -3,7 +3,7 @@ package main
 // 敏感词检测服务入口。
 //
 // 运行:
-//   go run ./cmd/server -words ./words.json -addr :8080
+//   go run ./cmd/server -words ./data/words.json -addr :8080
 //
 // 启动流程:
 //   1. 加载词库文件, 构建初始自动机。
@@ -37,7 +37,7 @@ func configuredModelServiceURL() string {
 
 func main() {
 	var (
-		wordsPath    = flag.String("words", "./words.json", "敏感词库文件路径 (JSON)")
+		wordsPath    = flag.String("words", "./data/words.json", "敏感词库文件路径 (JSON)")
 		addr         = flag.String("addr", ":8080", "HTTP 监听地址")
 		watch        = flag.Bool("watch", true, "是否启用 fsnotify 文件监听热加载")
 		caseIns      = flag.Bool("ci", false, "匹配是否大小写不敏感 (主要影响英文词, 如 Bilibili≈bilibili)")

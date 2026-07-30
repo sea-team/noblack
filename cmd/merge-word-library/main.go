@@ -38,7 +38,7 @@ func main() {
 	allowPath := flag.String("allow", "", "sensitive-word-go 白名单词库")
 	denyPath := flag.String("deny", "", "sensitive-word-go 用户黑名单词库")
 	basePath := flag.String("base", "", "已有 Noblack JSON 词库, 可为空")
-	outputPath := flag.String("output", "./words.json", "输出 Noblack JSON 词库")
+	outputPath := flag.String("output", "./data/words.json", "输出 Noblack JSON 词库")
 	flag.Parse()
 
 	if *dictPath == "" || *tagsPath == "" {
