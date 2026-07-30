@@ -33,6 +33,12 @@ type AddMergeResult struct {
 	ReusedWords []string
 }
 
+// EntryPage is a filtered and sorted page of词库条目.
+type EntryPage struct {
+	Entries []matcher.Entry
+	Total   int
+}
+
 // Store 保存自动机原子引用 + 词条内存副本。
 type Store struct {
 	v atomic.Value // *matcher.Automaton, 读路径无锁访问
@@ -92,6 +98,55 @@ func (s *Store) ListEntries() []matcher.Entry {
 	copy(out, s.entries)
 	sort.Slice(out, func(i, j int) bool { return out[i].Word < out[j].Word })
 	return out
+}
+
+// ListEntriesPage returns one sorted page without holding the store lock while
+// filtering, sorting, or slicing the snapshot.
+func (s *Store) ListEntriesPage(page, pageSize int, query string) EntryPage {
+	s.mu.Lock()
+	snapshot := cloneEntries(s.entries)
+	s.mu.Unlock()
+
+	query = strings.ToLower(strings.TrimSpace(query))
+	filtered := make([]matcher.Entry, 0, len(snapshot))
+	for _, entry := range snapshot {
+		if query != "" && !entryMatchesQuery(entry, query) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	sort.Slice(filtered, func(i, j int) bool { return filtered[i].Word < filtered[j].Word })
+
+	total := len(filtered)
+	if page < 1 || pageSize < 1 {
+		return EntryPage{Entries: []matcher.Entry{}, Total: total}
+	}
+	start := (page - 1) * pageSize
+	if start >= total {
+		return EntryPage{Entries: []matcher.Entry{}, Total: total}
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	return EntryPage{Entries: cloneEntries(filtered[start:end]), Total: total}
+}
+
+func entryMatchesQuery(entry matcher.Entry, query string) bool {
+	if strings.Contains(strings.ToLower(entry.Word), query) {
+		return true
+	}
+	for _, value := range entry.Levels {
+		if strings.Contains(strings.ToLower(value), query) {
+			return true
+		}
+	}
+	for _, value := range entry.Remarks {
+		if strings.Contains(strings.ToLower(value), query) {
+			return true
+		}
+	}
+	return false
 }
 
 // findLocked 返回 word 在 s.entries 中的下标, 不存在返回 -1。调用者须持有 mu。

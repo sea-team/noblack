@@ -26,6 +26,43 @@ func newTempStore(t *testing.T) *Store {
 	return New(path, loaded, matcher.Options{})
 }
 
+func TestListEntriesPageSortsFiltersAndPaginates(t *testing.T) {
+	s := New("", []matcher.Entry{
+		{Word: "delta", Levels: []string{"Normal"}, Remarks: []string{"fourth"}},
+		{Word: "Alpha", Levels: []string{"Safe"}, Remarks: []string{"first"}},
+		{Word: "charlie", Levels: []string{"Gambling"}, Remarks: []string{"third"}},
+		{Word: "bravo", Levels: []string{"Review"}, Remarks: []string{"SECOND"}},
+	}, matcher.Options{})
+
+	page := s.ListEntriesPage(2, 2, "")
+	if page.Total != 4 || len(page.Entries) != 2 {
+		t.Fatalf("page = %+v, want total 4 and 2 entries", page)
+	}
+	if page.Entries[0].Word != "charlie" || page.Entries[1].Word != "delta" {
+		t.Fatalf("page entries = %+v, want [charlie delta]", page.Entries)
+	}
+
+	cases := []struct {
+		query string
+		want  string
+	}{
+		{query: "ALP", want: "Alpha"},
+		{query: "gambling", want: "charlie"},
+		{query: "second", want: "bravo"},
+	}
+	for _, tc := range cases {
+		result := s.ListEntriesPage(1, 10, tc.query)
+		if result.Total != 1 || len(result.Entries) != 1 || result.Entries[0].Word != tc.want {
+			t.Fatalf("query %q result = %+v, want one entry %q", tc.query, result, tc.want)
+		}
+	}
+
+	beyond := s.ListEntriesPage(3, 2, "")
+	if beyond.Total != 4 || beyond.Entries == nil || len(beyond.Entries) != 0 {
+		t.Fatalf("beyond page = %+v, want total 4 and empty non-nil entries", beyond)
+	}
+}
+
 func TestAddUpdateDelete(t *testing.T) {
 	s := newTempStore(t)
 
