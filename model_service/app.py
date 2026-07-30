@@ -17,8 +17,8 @@ os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-ROOT = Path(__file__).resolve().parent.parent
-SRC = ROOT / "model_service" / "src"
+SOURCE_ROOT = Path(__file__).resolve().parent.parent
+SRC = SOURCE_ROOT / "model_service" / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
@@ -28,6 +28,10 @@ from noblack_model.policy import (  # noqa: E402
     SUPPORTED_COMBINE_POLICIES,
     combine_model_actions,
 )
+from noblack_model.runtime_paths import resolve_package_root  # noqa: E402
+
+
+ROOT = resolve_package_root()
 
 
 def env_float(name: str, default: float) -> float:

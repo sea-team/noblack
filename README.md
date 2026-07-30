@@ -202,6 +202,7 @@ Authorization: Bearer your-secret-token
 | `NB_TOKEN` | 空 | `-token` | 词库写操作令牌 |
 | `NB_CI` | `false` | `-ci` | 是否忽略英文大小写 |
 | `NB_WATCH` | `true` | `-watch` | 是否启用文件监听 |
+| `NB_MODEL_SERVICE_URL` | 空 | `-model-service-url` | 可选模型服务地址；为空时仅使用词库匹配 |
 
 ## 热更新机制
 
@@ -263,16 +264,43 @@ go test -bench=. ./internal/matcher/
 
 ## AI 双模型（纯 CPU）
 
-项目已内置 Lite 与 MacBERT 两个模型。部署时两个模型同时常驻内存，每次检测并行执行，并在 Web 页面同时显示结果。
+项目可选内置 Lite 与 MacBERT 两个模型。默认部署仅使用合并后的词库匹配，不启动模型服务；显式配置 `NB_MODEL_SERVICE_URL` 或使用 `--enable-models` 后，两个模型才会同时常驻内存并并行执行。
 
 生产微调模型默认采用 `max` 策略以保留任一模型发现的色情/谐音风险；如需进一步压低误报，可设置 `NB_MODEL_COMBINE_POLICY=consensus`，要求两个模型共同升级。
 
 ```powershell
-# Windows
+# Windows（默认仅词库匹配）
 .\scripts\start-all.ps1
 
-# Docker
- docker compose up -d --build
+# Windows（启用可选 CPU 模型）
+.\scripts\start-all.ps1 -EnableModels
+
+# Docker（默认仅词库匹配）
+docker compose up -d --build
 ```
 
 打开 `http://127.0.0.1:8080`。详细说明见 [DEPLOY_MODELS.md](./DEPLOY_MODELS.md)。
+
+## Windows/Linux 离线运行包
+
+发布脚本会校验生产模型权重，分别构建 Go 主服务和 PyInstaller 模型服务，并生成带 SHA-256 的原生离线包。模型程序必须在目标操作系统上构建。
+
+```bash
+# Linux x86_64
+python scripts/release.py validate
+python scripts/release.py build --target linux-amd64
+```
+
+```powershell
+# Windows 10/11 x64
+python scripts\release.py validate
+python scripts\release.py build --target windows-amd64
+```
+
+输出位于 `dist/`：
+
+- `noblack-linux-amd64.tar.gz`
+- `noblack-windows-amd64.zip`
+- 对应的 `.sha256` 文件和已组装运行目录
+
+运行包提供完整双模型模式和仅词库模式，目标机器无需安装 Go、Python、PyTorch 或 Transformers。

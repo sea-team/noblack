@@ -5,7 +5,7 @@
 - `models/lite-production-v1`：轻量字符 + 拼音双分支模型
 - `models/macbert-production-v1`：MacBERT + 拼音双分支模型
 
-部署时两个模型会：
+默认部署只启动 Go 词库服务，不启动模型。启用模型后，两个模型会：
 
 1. 强制使用纯 CPU；
 2. 服务启动时加载一次并常驻内存；
@@ -39,7 +39,7 @@ http://127.0.0.1:8080
 ### 自检
 
 ```powershell
-python .\scripts\start_all.py --self-test --port 18080 --model-port 18091
+    python .\scripts\start_all.py --enable-models --self-test --port 18080 --model-port 18091
 ```
 
 成功输出应包含：
@@ -77,7 +77,7 @@ docker compose up -d --build
 | `NB_LITE_PASS_THRESHOLD` / `NB_LITE_BLOCK_THRESHOLD` | 继承共用阈值 | 单独调整 Lite 阈值 |
 | `NB_MACBERT_PASS_THRESHOLD` / `NB_MACBERT_BLOCK_THRESHOLD` | 继承共用阈值 | 单独调整 MacBERT 阈值 |
 | `NB_MODEL_COMBINE_POLICY` | `max` | `max` 保留任一模型风险；`consensus` 要求两个模型共同升级，误报更低 |
-| `NB_MODEL_SERVICE_URL` | `http://127.0.0.1:8091` | Go 调用的本地模型服务 |
+| `NB_MODEL_SERVICE_URL` | 空 | Go 调用的本地模型服务；为空时禁用模型 |
 | `NB_MODEL_MAX_TEXT_CHARS` | `20000` | AI 模型单次文本字符上限 |
 
 CPU 核数较多时可以调整：
@@ -126,7 +126,7 @@ Go 服务会继续返回关键词匹配结果，并在响应中添加：
 {"model_error":"model service unavailable"}
 ```
 
-正常的一体化启动脚本和 Docker 入口会等待两个模型都成功加载后，才启动 Go Web 服务。
+启用模型时，一体化启动脚本和 Docker 入口会等待两个模型都成功加载后才启动 Go Web 服务；模型关闭时直接启动纯 Go 词库服务。
 
 ## Git LFS
 

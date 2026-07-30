@@ -102,11 +102,12 @@ def terminate(process: subprocess.Popen | None) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run noblack Go server and two resident CPU models")
+    parser = argparse.ArgumentParser(description="Run the noblack Go server; CPU models are optional")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--model-port", type=int, default=8091)
     parser.add_argument("--threads", type=int, default=2)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--enable-models", action="store_true")
     args = parser.parse_args()
 
     env = normalized_env()
@@ -121,20 +122,23 @@ def main() -> int:
     model_process: subprocess.Popen | None = None
     go_process: subprocess.Popen | None = None
     try:
-        model_process = subprocess.Popen(
-            [sys.executable, str(ROOT / "model_service" / "app.py")],
-            cwd=ROOT,
-            env=env,
-        )
-        health = wait_health(model_url + "/health", model_process, timeout=45)
-        print(
-            f"[runner] CPU models ready: {','.join(health['models'])}; "
-            f"parallel={health['parallel']}",
-            flush=True,
-        )
+        go_model_url = ""
+        if args.enable_models:
+            model_process = subprocess.Popen(
+                [sys.executable, str(ROOT / "model_service" / "app.py")],
+                cwd=ROOT,
+                env=env,
+            )
+            health = wait_health(model_url + "/health", model_process, timeout=45)
+            print(
+                f"[runner] CPU models ready: {','.join(health['models'])}; "
+                f"parallel={health['parallel']}",
+                flush=True,
+            )
+            go_model_url = model_url
 
         go_env = env.copy()
-        go_env["NB_MODEL_SERVICE_URL"] = model_url
+        go_env["NB_MODEL_SERVICE_URL"] = go_model_url
         go_cache = ROOT / ".gocache"
         go_tmp = ROOT / ".gotmp"
         go_cache.mkdir(exist_ok=True)
@@ -151,7 +155,7 @@ def main() -> int:
                 "-words",
                 "./words.json",
                 "-model-service-url",
-                model_url,
+                go_model_url,
             ],
             cwd=ROOT,
             env=go_env,
@@ -159,12 +163,13 @@ def main() -> int:
         wait_health(f"http://127.0.0.1:{args.port}/health", go_process, timeout=45)
 
         if args.self_test:
-            response = request_json(
-                f"http://127.0.0.1:{args.port}/check",
-                {"text": "晚上好"},
-                timeout=30,
-            )
+            response = request_json(f"http://127.0.0.1:{args.port}/check", {"text": "晚上好"}, timeout=30)
             data = response.get("data", {})
+            if not args.enable_models:
+                if data.get("has_sensitive_word"):
+                    raise RuntimeError(f"unexpected keyword hit: {response}")
+                print(json.dumps({"ok": True, "models_enabled": False}, ensure_ascii=False, indent=2))
+                return 0
             models = data.get("model_results", [])
             if (
                 len(models) != 2
@@ -194,7 +199,7 @@ def main() -> int:
         while True:
             if go_process.poll() is not None:
                 return go_process.returncode or 1
-            if model_process.poll() is not None:
+            if model_process is not None and model_process.poll() is not None:
                 raise RuntimeError(f"model service exited with code {model_process.returncode}")
             time.sleep(0.5)
     except KeyboardInterrupt:

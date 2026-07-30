@@ -30,39 +30,44 @@ if [ -n "$stats_dir" ] && [ "$stats_dir" != "$words_dir" ]; then
   check_write_dir "$stats_dir"
 fi
 
-# The model service is loopback-only. Both models are loaded once and remain in
-# memory; each request runs Lite and MacBERT concurrently on CPU.
-python /app/model_service/app.py &
-model_pid=$!
+model_pid=""
+if [ -n "${NB_MODEL_SERVICE_URL:-}" ]; then
+  # The model service is loopback-only. Both models are loaded once and remain
+  # in memory; each request runs Lite and MacBERT concurrently on CPU.
+  python /app/model_service/app.py &
+  model_pid=$!
 
-cleanup() {
-  kill "$model_pid" 2>/dev/null || true
-}
-trap cleanup INT TERM EXIT
+  cleanup() {
+    kill "$model_pid" 2>/dev/null || true
+  }
+  trap cleanup INT TERM EXIT
 
-ready="false"
-i=0
-while [ "$i" -lt 120 ]; do
-  if curl -fsS "http://${NB_MODEL_HOST:-127.0.0.1}:${NB_MODEL_PORT:-8091}/health" >/dev/null 2>&1; then
-    ready="true"
-    break
-  fi
-  if ! kill -0 "$model_pid" 2>/dev/null; then
-    echo "[entrypoint] model service exited during startup" >&2
+  ready="false"
+  i=0
+  while [ "$i" -lt 120 ]; do
+    if curl -fsS "http://${NB_MODEL_HOST:-127.0.0.1}:${NB_MODEL_PORT:-8091}/health" >/dev/null 2>&1; then
+      ready="true"
+      break
+    fi
+    if ! kill -0 "$model_pid" 2>/dev/null; then
+      echo "[entrypoint] model service exited during startup" >&2
+      exit 1
+    fi
+    i=$((i + 1))
+    sleep 1
+  done
+  if [ "$ready" != "true" ]; then
+    echo "[entrypoint] model service startup timed out" >&2
     exit 1
   fi
-  i=$((i + 1))
-  sleep 1
-done
-if [ "$ready" != "true" ]; then
-  echo "[entrypoint] model service startup timed out" >&2
-  exit 1
+
+  echo "[entrypoint] dual CPU models are ready"
+else
+  echo "[entrypoint] model service disabled"
 fi
 
-echo "[entrypoint] dual CPU models are ready"
-
 set -- -addr "$NB_ADDR" -words "$NB_WORDS" -watch="$NB_WATCH" \
-  -model-service-url "$NB_MODEL_SERVICE_URL"
+  -model-service-url "${NB_MODEL_SERVICE_URL:-}"
 if [ -n "${NB_STATS:-}" ]; then
   set -- "$@" -stats-file "$NB_STATS"
 fi

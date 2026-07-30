@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -30,11 +31,8 @@ import (
 	"noblack/internal/store"
 )
 
-func envOr(name, fallback string) string {
-	if value := os.Getenv(name); value != "" {
-		return value
-	}
-	return fallback
+func configuredModelServiceURL() string {
+	return strings.TrimSpace(os.Getenv("NB_MODEL_SERVICE_URL"))
 }
 
 func main() {
@@ -47,7 +45,7 @@ func main() {
 		statsFile    = flag.String("stats-file", "", "统计持久化文件路径 (JSON); 留空则不持久化, 重启后统计归零")
 		statsIvl     = flag.Duration("stats-flush-interval", 30*time.Second, "统计后台落盘间隔 (仅在 -stats-file 非空时生效)")
 		token        = flag.String("token", "", "词条写操作(新增/修改/删除)的鉴权令牌; 留空则不鉴权")
-		modelURL     = flag.String("model-service-url", envOr("NB_MODEL_SERVICE_URL", "http://127.0.0.1:8091"), "dual-model service URL; empty disables AI models")
+		modelURL     = flag.String("model-service-url", configuredModelServiceURL(), "dual-model service URL; empty disables AI models")
 		modelTimeout = flag.Duration("model-timeout", 45*time.Second, "dual-model inference timeout")
 	)
 	flag.Parse()

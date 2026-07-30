@@ -1,0 +1,10 @@
+{
+  "models/lite-production-v1/model.safetensors": {
+    "size": 5361712,
+    "sha256": "27fc0b24c3e5a894f315aab2ca76d80129092fd7a74dea3a12a3b52d25e27d28"
+  },
+  "models/macbert-production-v1/model.safetensors": {
+    "size": 411703720,
+    "sha256": "9dd249951ebe083a537036ac50155b03b3582de62b07872176e13b98ccc02010"
+  }
+}
