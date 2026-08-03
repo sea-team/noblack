@@ -387,6 +387,46 @@ docker compose up -d --build
 
 发布脚本会校验生产模型权重，分别构建 Go 主服务和 PyInstaller 模型服务，并生成带 SHA-256 的原生离线包。模型程序必须在目标操作系统上构建。
 
+> ⚠️ **构建前先看这里，不要重新安装依赖。**
+>
+> 构建用的 Python 虚拟环境已存在于 `.build/` 下（该目录在 `.gitignore` 中，不会提交，但**请勿删除**）：
+>
+> | 环境 | 路径 | 解释器 |
+> |------|------|--------|
+> | Linux | `.build/linux-venv/` | `.build/linux-venv/bin/python` |
+> | Windows | `.build/windows-venv/` | `.build/windows-venv/Scripts/python.exe` |
+>
+> 直接用上表的解释器调用 `scripts/release.py`，**无需 pip install**（torch 等依赖有数 GB，重装非常耗时）：
+>
+> ```bash
+> .build/linux-venv/bin/python scripts/release.py build --target linux-amd64
+> ```
+>
+> 检查环境是否可用（而不是去看系统 Python 或项目根目录的 `.venv`）：
+>
+> ```bash
+> .build/linux-venv/bin/python -c "import PyInstaller, torch, transformers; print('ok')"
+> ```
+>
+> **依赖版本以 `model_service/requirements.txt` 为准**（transformers 5.13.1、safetensors 0.8.0、pypinyin 0.55.0），配合 `torch==2.6.0+cpu`。
+>
+> ⚠️ **Windows 构建必须先清空 `PYTHONPATH`。** 系统环境变量 `PYTHONPATH=K:\site-packages` 指向一个外部 conda 环境（装有 FunASR、ModelScope 等其他项目的依赖），它在 `sys.path` 中排在 venv 自身的 `Lib\site-packages` 之前，会让构建误用 transformers 4.27.4 等旧版本。在 PowerShell 中按下面这样构建（`$env:` 只影响当前会话，不改系统设置）：
+>
+> ```powershell
+> cd D:\work\project\go\noblack
+> $env:PYTHONPATH = ""
+> .build\windows-venv\Scripts\python.exe scripts\release.py build --target windows-amd64
+> ```
+>
+> 验证构建实际用的版本（应为 5.13.1，而非 4.27.4）：
+>
+> ```powershell
+> $env:PYTHONPATH = ""
+> .build\windows-venv\Scripts\python.exe -c "import transformers; print(transformers.__version__, transformers.__file__)"
+> ```
+>
+> 注意 WSL 侧无法覆盖这个变量——它是 Windows 系统级设置，Windows 进程启动时从注册表读取，`env -u PYTHONPATH` 之类的做法无效。
+
 ```bash
 # Linux x86_64
 python scripts/release.py validate
@@ -398,6 +438,15 @@ python scripts/release.py build --target linux-amd64
 python scripts\release.py validate
 python scripts\release.py build --target windows-amd64
 ```
+
+PyInstaller 不支持交叉编译。若临时需要在 Linux 上打 Windows 包，可用 `--model-executable` 复用一份已构建好的模型程序：
+
+```bash
+.build/linux-venv/bin/python scripts/release.py build --target windows-amd64 \
+  --model-executable .build/pyi-dist/noblack-model.exe
+```
+
+但这样只有 Go 主服务是新的，**模型服务仍是复用的旧版**——`model_service/` 下的 Python 改动不会进入该包。只要改动了 `model_service/`，就必须按上面的 PowerShell 方式在 Windows 上原生构建。
 
 输出位于 `dist/`：
 
