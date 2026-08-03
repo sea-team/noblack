@@ -31,6 +31,7 @@ _CONFIG_PATH, _CONFIG_KEYS = _load_config_env()
 
 import torch  # noqa: E402
 from noblack_model.inference import SafetyPredictor  # noqa: E402
+from noblack_model.modelsel import resolve_enabled_models  # noqa: E402
 from noblack_model.policy import (  # noqa: E402
     SUPPORTED_COMBINE_POLICIES,
     combine_model_actions,
@@ -62,10 +63,13 @@ if COMBINE_POLICY not in SUPPORTED_COMBINE_POLICIES:
     raise ValueError(f"NB_MODEL_COMBINE_POLICY must be one of: {allowed}")
 MAX_TEXT_CHARS = int(os.getenv("NB_MODEL_MAX_TEXT_CHARS", "20000"))
 
-MODEL_PATHS = {
+ALL_MODEL_PATHS = {
     "lite": Path(os.getenv("NB_LITE_MODEL", str(ROOT / "models" / "lite-production-v1"))),
     "macbert": Path(os.getenv("NB_MACBERT_MODEL", str(ROOT / "models" / "macbert-production-v1"))),
 }
+
+
+MODEL_PATHS = resolve_enabled_models(ALL_MODEL_PATHS, os.getenv("NB_MODELS"))
 MODEL_THRESHOLDS = {
     "lite": (
         env_float("NB_LITE_PASS_THRESHOLD", PASS_THRESHOLD),
@@ -84,7 +88,10 @@ def text_ref(text: str) -> str:
 
 class ModelRuntime:
     def __init__(self) -> None:
-        self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="noblack-model")
+        # 线程池按实际启用的模型数分配: 单模型时无需第二个工作线程。
+        self.executor = ThreadPoolExecutor(
+            max_workers=max(1, len(MODEL_PATHS)), thread_name_prefix="noblack-model"
+        )
         self.predictors: dict[str, SafetyPredictor] = {}
         load_started = time.perf_counter()
         for name, path in MODEL_PATHS.items():
@@ -126,12 +133,13 @@ class ModelRuntime:
             name: self.executor.submit(run_one, name, predictor)
             for name, predictor in self.predictors.items()
         }
-        results = [futures[name].result() for name in ("lite", "macbert")]
+        results = [futures[name].result() for name in self.predictors]
         combined = combine_model_actions(results, policy=COMBINE_POLICY)
         return {
             "request_id": text_ref(text),
             "device": "cpu",
-            "parallel": True,
+            # 单模型时不存在并行推理, 如实上报避免误导监控。
+            "parallel": len(self.predictors) > 1,
             "models": results,
             "combined_action": combined,
             "combine_policy": COMBINE_POLICY,
@@ -163,7 +171,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "ok": True,
                 "device": "cpu",
                 "models": list(RUNTIME.predictors),
-                "parallel": True,
+                "parallel": len(RUNTIME.predictors) > 1,
                 "combine_policy": COMBINE_POLICY,
                 "torch_threads": TORCH_THREADS,
                 "load_seconds": round(RUNTIME.load_seconds, 3),

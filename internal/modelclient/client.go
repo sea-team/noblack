@@ -93,7 +93,9 @@ func (c *Client) Check(ctx context.Context, text string) (*Prediction, error) {
 	if err := json.Unmarshal(limited, &result); err != nil {
 		return nil, fmt.Errorf("decode model service response: %w", err)
 	}
-	if !result.OK || len(result.Models) != 2 {
+	// 只要求至少返回一个模型结果: 服务端可通过 NB_MODELS 只启用 lite,
+	// 此时响应里就只有一个模型, 不应视为不完整。
+	if !result.OK || len(result.Models) == 0 {
 		return nil, fmt.Errorf("model service returned incomplete prediction")
 	}
 	return &result, nil
@@ -116,7 +118,9 @@ func (c *Client) Health(ctx context.Context) error {
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&health); err != nil {
 		return err
 	}
-	if !health.OK || len(health.Models) != 2 || !health.Parallel {
+	// parallel 仅在多模型时为 true, 单模型部署 (NB_MODELS=lite) 下恒为 false,
+	// 因此不能作为就绪判据; 只要服务 ok 且至少加载了一个模型即视为可用。
+	if !health.OK || len(health.Models) == 0 {
 		return fmt.Errorf("model service is not fully ready")
 	}
 	return nil

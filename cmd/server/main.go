@@ -170,8 +170,8 @@ func main() {
 		statsIvl     = flag.Duration("stats-flush-interval", 30*time.Second, "统计后台落盘间隔 (仅在 -stats-file 非空时生效)")
 		token        = flag.String("token", envOrString("NB_TOKEN", ""), "词条写操作(新增/修改/删除)的鉴权令牌; 留空则不鉴权; 亦可用环境变量 NB_TOKEN 设置")
 		detectToken  = flag.String("detect-token", envOrString("NB_DETECT_TOKEN", ""), "检测接口(/check, /stats)的鉴权令牌; 留空则检测不鉴权; -token 令牌同样可调用检测接口; 亦可用环境变量 NB_DETECT_TOKEN 设置")
-		modelURL     = flag.String("model-service-url", configuredModelServiceURL(), "dual-model service URL; empty disables AI models")
-		modelTimeout = flag.Duration("model-timeout", 45*time.Second, "dual-model inference timeout")
+		modelURL     = flag.String("model-service-url", configuredModelServiceURL(), "AI 模型服务地址; 留空则禁用模型 (启用哪些模型由模型服务的 NB_MODELS 决定)")
+		modelTimeout = flag.Duration("model-timeout", 45*time.Second, "模型推理超时")
 		detectMode   = flag.String("detect-mode", configuredDetectMode(), "检测模式: model_only|model_first|word_only|word_first|both; 亦可用环境变量 NB_DETECT_MODE 设置; 请求体 mode 可覆盖")
 		recallOnMiss = flag.Bool("recall-on-miss", configuredRecallOnMiss(), "优先链路未命中时补跑另一条链路以提高召回 (注意: 与技术失败降级无关); 亦可用环境变量 NB_RECALL_ON_MISS 设置; 请求体 recall_on_miss 可覆盖")
 	)
@@ -272,7 +272,7 @@ func main() {
 		if err := client.Health(healthCtx); err != nil {
 			log.Printf("[models] service not ready at startup; /check will degrade gracefully: %v", err)
 		} else {
-			log.Printf("[models] dual CPU model service ready: %s", *modelURL)
+			log.Printf("[models] CPU 模型服务就绪: %s", *modelURL)
 		}
 		healthCancel()
 	}
