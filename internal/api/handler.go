@@ -14,6 +14,8 @@ import (
 
 	"noblack/internal/matcher"
 	"noblack/internal/modelclient"
+	"noblack/internal/normalize"
+	"noblack/internal/samples"
 	"noblack/internal/stats"
 	"noblack/internal/store"
 )
@@ -23,7 +25,15 @@ type Handler struct {
 	store   *store.Store
 	metrics *stats.Collector
 	token   string // 词条写操作的鉴权令牌; 为空表示不鉴权
-	models  *modelclient.Client
+	// detectToken 是检测接口 (/check, /stats) 的独立鉴权令牌; 为空表示检测不鉴权。
+	// 与 token 分开, 便于把检测权限发给业务方而不连带给出词库写权限。
+	detectToken string
+	models      *modelclient.Client
+
+	detectMode   DetectMode // 进程级默认检测模式; 请求体 mode 可覆盖
+	recallOnMiss bool       // 进程级默认召回开关; 请求体 recall_on_miss 可覆盖
+
+	samples *samples.Store // 语义样本库, 用于补足模型漏报; nil 表示未启用
 }
 
 const (
@@ -46,13 +56,32 @@ func positiveQueryInt(r *http.Request, name string, defaultValue, maximum int) (
 }
 
 // NewHandler 创建 Handler。token 为空时词条写操作不鉴权 (向后兼容)。
+// 检测模式默认为 both, 与历史行为一致。
+// 检测接口的鉴权令牌另行通过 SetDetectToken 设置。
 func NewHandler(s *store.Store, m *stats.Collector, token string) *Handler {
-	return &Handler{store: s, metrics: m, token: token}
+	return &Handler{store: s, metrics: m, token: token, detectMode: DefaultDetectMode}
+}
+
+// SetDetectToken 设置检测接口 (/check, /stats) 的独立鉴权令牌。
+// 留空表示检测接口不鉴权, 与历史行为一致。
+func (h *Handler) SetDetectToken(token string) {
+	h.detectToken = token
 }
 
 // SetModelClient enables dual-model inference for /check.
 func (h *Handler) SetModelClient(client *modelclient.Client) {
 	h.models = client
+}
+
+// SetSampleStore 启用语义样本库, 用于补足模型漏报。
+func (h *Handler) SetSampleStore(store *samples.Store) {
+	h.samples = store
+}
+
+// SetDetectMode 设置进程级默认检测模式与召回开关。
+func (h *Handler) SetDetectMode(mode DetectMode, recallOnMiss bool) {
+	h.detectMode = mode
+	h.recallOnMiss = recallOnMiss
 }
 
 // ---------- 鉴权 ----------
@@ -86,6 +115,33 @@ func (h *Handler) checkAuth(r *http.Request) bool {
 // requireAuth 校验失败时写 401 并返回 false。
 func (h *Handler) requireAuth(w http.ResponseWriter, r *http.Request) bool {
 	if h.checkAuth(r) {
+		return true
+	}
+	writeErr(w, http.StatusUnauthorized, "令牌无效或缺失")
+	return false
+}
+
+// detectAuthEnabled 报告检测接口是否启用了鉴权。
+func (h *Handler) detectAuthEnabled() bool { return h.detectToken != "" }
+
+// checkDetectAuth 校验检测接口的令牌。未启用检测鉴权时恒通过。
+// 检测令牌与管理令牌任一匹配即放行: 管理令牌权限更高, 理应能调用检测接口,
+// 这样管理页面用一个令牌即可完成全部操作。
+func (h *Handler) checkDetectAuth(r *http.Request) bool {
+	if !h.detectAuthEnabled() {
+		return true
+	}
+	got := []byte(tokenFromRequest(r))
+	if subtle.ConstantTimeCompare(got, []byte(h.detectToken)) == 1 {
+		return true
+	}
+	// 管理令牌为空时不参与比较, 否则未携带令牌的请求会因两个空串相等而通过。
+	return h.authEnabled() && subtle.ConstantTimeCompare(got, []byte(h.token)) == 1
+}
+
+// requireDetectAuth 校验失败时写 401 并返回 false。
+func (h *Handler) requireDetectAuth(w http.ResponseWriter, r *http.Request) bool {
+	if h.checkDetectAuth(r) {
 		return true
 	}
 	writeErr(w, http.StatusUnauthorized, "令牌无效或缺失")
@@ -146,6 +202,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	handle("/words/", h.handleWordByID)
 	handle("/stats", h.handleStats)
 	handle("/stats/reset", h.handleStatsReset)
+	handle("/samples", h.handleSamples)
+	handle("/samples/", h.handleSampleByID)
 	handle("/auth/status", h.handleAuthStatus)
 	handle("/auth/verify", h.handleAuthVerify)
 	handle("/", h.handleIndex)
@@ -173,6 +231,10 @@ func writeErr(w http.ResponseWriter, httpStatus int, msg string) {
 
 type checkRequest struct {
 	Text string `json:"text"`
+	// Mode 覆盖进程级检测模式; 留空则使用启动参数配置的默认值。
+	Mode string `json:"mode,omitempty"`
+	// RecallOnMiss 覆盖进程级召回开关。用指针区分 "未指定" 与 "显式 false"。
+	RecallOnMiss *bool `json:"recall_on_miss,omitempty"`
 }
 
 type position struct {
@@ -190,6 +252,10 @@ type matchItem struct {
 type checkData struct {
 	HasSensitiveWord   bool                      `json:"has_sensitive_word"`
 	Matches            []matchItem               `json:"matches"`
+	Blocked            bool                      `json:"blocked"`
+	DecidedBy          string                    `json:"decided_by"`
+	DetectMode         string                    `json:"detect_mode"`
+	RecallTriggered    bool                      `json:"recall_triggered,omitempty"`
 	ModelResults       []modelclient.ModelResult `json:"model_results,omitempty"`
 	CombinedAction     string                    `json:"combined_action,omitempty"`
 	ModelCombinePolicy string                    `json:"model_combine_policy,omitempty"`
@@ -197,44 +263,49 @@ type checkData struct {
 	ModelsParallel     bool                      `json:"models_parallel,omitempty"`
 	ModelLatencyMS     float64                   `json:"model_latency_ms,omitempty"`
 	ModelError         string                    `json:"model_error,omitempty"`
+	SampleMatches      []samples.Match           `json:"sample_matches,omitempty"`
 }
 
-func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST")
-		return
-	}
+// decidedBy 取值, 说明最终 blocked 结论由哪条链路给出。
+const (
+	decidedByWords    = "words"
+	decidedByModel    = "model"
+	decidedByBoth     = "both"
+	decidedByNone     = "none"
+	decidedByDegraded = "degraded"
+	decidedBySample   = "sample"
+)
 
-	var req checkRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
-		return
+// modelBlocks 判断模型综合动作是否构成拦截。
+// 模型侧 action 语义: pass / review / block。review 视为命中 (需要人工介入),
+// 只有 pass 才算未命中。
+func modelBlocks(action string) bool {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "", "pass":
+		return false
+	default:
+		return true
 	}
+}
 
-	// 无锁获取当前自动机并匹配。
-	if strings.TrimSpace(req.Text) == "" {
-		writeErr(w, http.StatusBadRequest, "text 不能为空或仅包含空白字符")
-		return
+// wordOutcome 是词库链路的结果。词库为纯内存匹配, 不存在技术失败。
+type wordOutcome struct {
+	items []matchItem
+	hits  []string
+}
+
+// runWords 执行词库匹配并记录统计。
+func (h *Handler) runWords(text string) wordOutcome {
+	automaton := h.store.Current()
+	// 归一化词库要走归一化匹配, 否则输入与词条不在同一空间, 反而全都匹配不上。
+	var rawMatches []matcher.Match
+	if automaton.Normalized() {
+		rawMatches = automaton.FindAllNormalized(text)
+	} else {
+		rawMatches = automaton.FindAll(text)
 	}
-
-	type modelOutcome struct {
-		prediction *modelclient.Prediction
-		err        error
-	}
-	var modelCh chan modelOutcome
-	if h.models != nil {
-		modelCh = make(chan modelOutcome, 1)
-		modelContext := context.WithoutCancel(r.Context())
-		go func() {
-			prediction, err := h.models.Check(modelContext, req.Text)
-			modelCh <- modelOutcome{prediction: prediction, err: err}
-		}()
-	}
-
-	rawMatches := h.store.Current().FindAll(req.Text)
-
 	items := make([]matchItem, 0, len(rawMatches))
-	hitWords := make([]string, 0, len(rawMatches))
+	hits := make([]string, 0, len(rawMatches))
 	for _, m := range rawMatches {
 		levels := m.Levels
 		if levels == nil {
@@ -250,27 +321,225 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 			Remarks:  remarks,
 			Position: position{Start: m.Start, End: m.End},
 		})
-		hitWords = append(hitWords, m.Word)
+		hits = append(hits, m.Word)
+	}
+	return wordOutcome{items: items, hits: hits}
+}
+
+// modelOutcome 是模型链路的结果。err 非空即技术失败 (不可用/超时/响应不合法)。
+type modelOutcome struct {
+	prediction *modelclient.Prediction
+	err        error
+}
+
+// runModel 调用模型服务。使用 WithoutCancel 保持与既有行为一致:
+// 客户端断开不影响已发起的推理, 避免半途取消浪费算力。
+func (h *Handler) runModel(ctx context.Context, text string) modelOutcome {
+	// 送归一化文本: "炸.药" 这类插入字符会打断模型的语义信号,
+	// 还原为标准写法后模型才能正确判别。
+	//
+	// 保底: 若归一化后为空 (输入全是标点/Emoji), 退回原文,
+	// 避免把空串送给模型服务。
+	payload := normalize.Text(text)
+	if payload == "" {
+		payload = text
+	}
+	prediction, err := h.models.Check(context.WithoutCancel(ctx), payload)
+	return modelOutcome{prediction: prediction, err: err}
+}
+
+// applyModel 把模型结果写入响应, 并返回该链路是否判定拦截。
+func (data *checkData) applyModel(outcome modelOutcome) bool {
+	if outcome.err != nil {
+		log.Printf("[models] inference failed: %v", outcome.err)
+		data.ModelError = "model service unavailable"
+		return false
+	}
+	data.ModelResults = outcome.prediction.Models
+	data.CombinedAction = outcome.prediction.CombinedAction
+	data.ModelCombinePolicy = outcome.prediction.CombinePolicy
+	data.ModelDevice = outcome.prediction.Device
+	data.ModelsParallel = outcome.prediction.Parallel
+	data.ModelLatencyMS = outcome.prediction.LatencyMilliseconds
+	return modelBlocks(outcome.prediction.CombinedAction)
+}
+
+// applyWords 把词库结果写入响应, 并返回该链路是否判定拦截。
+func (data *checkData) applyWords(outcome wordOutcome) bool {
+	data.Matches = outcome.items
+	data.HasSensitiveWord = len(outcome.items) > 0
+	return len(outcome.items) > 0
+}
+
+// runDetection 按模式编排两条链路, 产出最终判定。
+//
+// 短路策略: 除 both 外均串行, 优先链路命中即返回, 省掉另一条链路的开销。
+// 降级只针对技术失败; 未命中的补跑由 recall 控制。
+func (h *Handler) runDetection(ctx context.Context, text string, mode DetectMode, recall bool) checkData {
+	data := checkData{
+		Matches:    []matchItem{},
+		DetectMode: string(mode),
+		DecidedBy:  decidedByNone,
+	}
+	// 无论走哪条链路, 词库统计都以实际执行为准; 未执行词库时记空命中。
+	var wordsRan bool
+	var words wordOutcome
+	runWordsOnce := func() wordOutcome {
+		if !wordsRan {
+			words = h.runWords(text)
+			wordsRan = true
+		}
+		return words
 	}
 
-	// 记录统计 (原子操作, ~纳秒级, 不影响吞吐)。
-	h.metrics.RecordCheck(hitWords)
+	switch {
+	case mode.runsBothEagerly() && h.models != nil:
+		// 并行全跑: 保留历史吞吐特性。
+		ch := make(chan modelOutcome, 1)
+		go func() { ch <- h.runModel(ctx, text) }()
+		wordHit := data.applyWords(runWordsOnce())
+		modelHit := data.applyModel(<-ch)
+		data.Blocked = wordHit || modelHit
+		data.DecidedBy = combineDecider(wordHit, modelHit, data.ModelError != "")
 
-	data := checkData{HasSensitiveWord: len(items) > 0, Matches: items}
-	if modelCh != nil {
-		outcome := <-modelCh
-		if outcome.err != nil {
-			log.Printf("[models] inference failed: %v", outcome.err)
-			data.ModelError = "model service unavailable"
-		} else {
-			data.ModelResults = outcome.prediction.Models
-			data.CombinedAction = outcome.prediction.CombinedAction
-			data.ModelCombinePolicy = outcome.prediction.CombinePolicy
-			data.ModelDevice = outcome.prediction.Device
-			data.ModelsParallel = outcome.prediction.Parallel
-			data.ModelLatencyMS = outcome.prediction.LatencyMilliseconds
+	case mode == ModeWordOnly || (mode == ModeBoth && h.models == nil):
+		// 仅词库; both 在模型未配置时等价退化为此路径。
+		data.Blocked = data.applyWords(runWordsOnce())
+		if data.Blocked {
+			data.DecidedBy = decidedByWords
+		}
+
+	case mode == ModeModelOnly:
+		// 仅模型: 技术失败不回退词库, 直接暴露降级状态。
+		hit := data.applyModel(h.runModel(ctx, text))
+		data.Blocked = hit
+		switch {
+		case data.ModelError != "":
+			data.DecidedBy = decidedByDegraded
+		case hit:
+			data.DecidedBy = decidedByModel
+		}
+		if recall && !hit && data.ModelError == "" {
+			// 召回补跑: 模型未命中时用词库兜一次。
+			data.RecallTriggered = true
+			if data.applyWords(runWordsOnce()) {
+				data.Blocked = true
+				data.DecidedBy = decidedByWords
+			}
+		}
+
+	case mode == ModeModelFirst:
+		hit := data.applyModel(h.runModel(ctx, text))
+		switch {
+		case data.ModelError != "":
+			// 技术失败 → 回退词库。
+			data.Blocked = data.applyWords(runWordsOnce())
+			data.DecidedBy = decidedByWords
+		case hit:
+			data.Blocked = true
+			data.DecidedBy = decidedByModel
+		case recall:
+			// 未命中且开启召回 → 补跑词库。
+			data.RecallTriggered = true
+			if data.applyWords(runWordsOnce()) {
+				data.Blocked = true
+				data.DecidedBy = decidedByWords
+			}
+		}
+
+	case mode == ModeWordFirst:
+		hit := data.applyWords(runWordsOnce())
+		switch {
+		case hit:
+			data.Blocked = true
+			data.DecidedBy = decidedByWords
+		case recall && h.models != nil:
+			// 词库不会技术失败, 故此模式下模型仅用于未命中召回。
+			data.RecallTriggered = true
+			if data.applyModel(h.runModel(ctx, text)) {
+				data.Blocked = true
+				data.DecidedBy = decidedByModel
+			}
 		}
 	}
+
+	// 语义样本库: 补足模型漏报。
+	//
+	// 只在前面两条链路都没拦下来时才跑 —— 已经判定拦截就没必要再算相似度,
+	// 也避免覆盖掉更精确的归因 (词库/模型)。
+	if !data.Blocked && h.samples != nil && h.samples.Size() > 0 {
+		if sampleMatches := h.samples.FindAll(text); len(sampleMatches) > 0 {
+			data.SampleMatches = sampleMatches
+			data.Blocked = true
+			data.DecidedBy = decidedBySample
+		}
+	}
+
+	// 统计以词库实际执行情况为准, 未跑词库的模式记为无命中。
+	h.metrics.RecordCheck(words.hits)
+	return data
+}
+
+// combineDecider 在两条链路都跑完时归因最终结论。
+func combineDecider(wordHit, modelHit, degraded bool) string {
+	switch {
+	case wordHit && modelHit:
+		return decidedByBoth
+	case wordHit:
+		return decidedByWords
+	case modelHit:
+		return decidedByModel
+	case degraded:
+		return decidedByDegraded
+	default:
+		return decidedByNone
+	}
+}
+
+func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST")
+		return
+	}
+	if !h.requireDetectAuth(w, r) {
+		return
+	}
+
+	var req checkRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
+		return
+	}
+
+	// 无锁获取当前自动机并匹配。
+	if strings.TrimSpace(req.Text) == "" {
+		writeErr(w, http.StatusBadRequest, "text 不能为空或仅包含空白字符")
+		return
+	}
+
+	// 模式解析: 请求体 mode 覆盖进程级默认值。
+	mode := h.detectMode
+	if strings.TrimSpace(req.Mode) != "" {
+		parsed, err := ParseDetectMode(req.Mode)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		mode = parsed
+	}
+	// 召回开关: 请求体未显式指定时沿用进程级默认值。
+	recall := h.recallOnMiss
+	if req.RecallOnMiss != nil {
+		recall = *req.RecallOnMiss
+	}
+	// 模型未配置时, 依赖模型的模式无法执行。word_first/both 可安全降级为纯词库,
+	// 但 model_only/model_first 会失去全部判定依据, 必须显式报错而非静默放行。
+	if h.models == nil && (mode == ModeModelOnly || mode == ModeModelFirst) {
+		writeErr(w, http.StatusServiceUnavailable, "当前模式需要模型服务, 但服务未配置")
+		return
+	}
+
+	data := h.runDetection(r.Context(), req.Text, mode, recall)
 
 	writeJSON(w, http.StatusOK, apiResponse{
 		Code:    200,
@@ -454,6 +723,9 @@ func (h *Handler) handleWordByID(w http.ResponseWriter, r *http.Request) {
 // ---------- /stats ----------
 
 func (h *Handler) handleStats(w http.ResponseWriter, r *http.Request) {
+	if !h.requireDetectAuth(w, r) {
+		return
+	}
 	page, err := positiveQueryInt(r, "page", 1, 0)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -488,24 +760,39 @@ func (h *Handler) handleStatsReset(w http.ResponseWriter, r *http.Request) {
 
 // ---------- 鉴权状态 / 校验 ----------
 
-// handleAuthStatus GET /auth/status: 告诉前端是否需要令牌 (是否启用了写鉴权)。
+// handleAuthStatus GET /auth/status: 告诉前端是否需要令牌。
+// required 表示写操作鉴权是否开启; detect_required 表示检测接口鉴权是否开启。
+// 管理令牌同样可调用检测接口, 因此前端只需持有管理令牌。
 func (h *Handler) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, apiResponse{
 		Code: 200, Message: "success",
-		Data: map[string]bool{"required": h.authEnabled()},
+		Data: map[string]bool{
+			"required":        h.authEnabled(),
+			"detect_required": h.detectAuthEnabled(),
+		},
 	})
 }
 
 // handleAuthVerify POST /auth/verify: 校验请求携带的令牌是否正确, 供前端"验证"按钮使用。
-// 未启用鉴权时恒返回成功。
+// 管理令牌或检测令牌任一匹配即视为有效; 两种鉴权都未启用时恒返回成功。
 func (h *Handler) handleAuthVerify(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST")
 		return
 	}
-	if !h.checkAuth(r) {
-		writeErr(w, http.StatusUnauthorized, "令牌无效或缺失")
-		return
+	// 两种鉴权都没开时无令牌可校验, 直接放行。
+	// 注意不能复用 checkAuth/checkDetectAuth 的 "未启用即通过" 语义:
+	// 那会让只开一种鉴权时, 任意错误令牌都被另一种的恒真结果放过。
+	if h.authEnabled() || h.detectAuthEnabled() {
+		got := []byte(tokenFromRequest(r))
+		ok := h.authEnabled() && subtle.ConstantTimeCompare(got, []byte(h.token)) == 1
+		if !ok {
+			ok = h.detectAuthEnabled() && subtle.ConstantTimeCompare(got, []byte(h.detectToken)) == 1
+		}
+		if !ok {
+			writeErr(w, http.StatusUnauthorized, "令牌无效或缺失")
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, apiResponse{Code: 200, Message: "ok"})
 }

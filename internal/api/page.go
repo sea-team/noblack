@@ -181,9 +181,11 @@ let TOKEN = localStorage.getItem('nb_token') || '';
 let AUTH_REQUIRED = false;
 // 给写请求附加令牌头
 function authHeaders(extra){ const h = Object.assign({}, extra||{}); if(TOKEN) h['X-Auth-Token']=TOKEN; return h; }
-// 查询服务端是否启用鉴权, 决定是否显示令牌框
+// 查询服务端是否启用鉴权, 决定是否显示令牌框。
+// 写鉴权和检测鉴权任一开启都需要令牌框: 只开检测鉴权时,
+// 页面上的检测测试和统计查询同样要带令牌。
 async function checkAuth(){
-  try{ const d=await api('/auth/status'); AUTH_REQUIRED=!!d.required;
+  try{ const d=await api('/auth/status'); AUTH_REQUIRED=!!d.required||!!d.detect_required;
     $('#token-card').style.display = AUTH_REQUIRED ? 'block' : 'none';
     if(AUTH_REQUIRED){ $('#w-token').value=TOKEN; if(TOKEN) $('#token-state').textContent='(已保存)'; }
   }catch(e){}

@@ -77,6 +77,12 @@ fi
 if [ "${NB_CI:-false}" = "true" ]; then
   set -- "$@" -ci
 fi
+if [ -n "${NB_DETECT_MODE:-}" ]; then
+  set -- "$@" -detect-mode "$NB_DETECT_MODE"
+fi
+if [ "${NB_RECALL_ON_MISS:-false}" = "true" ]; then
+  set -- "$@" -recall-on-miss
+fi
 
 echo "[entrypoint] starting noblack on $NB_ADDR"
 exec /app/noblack "$@"

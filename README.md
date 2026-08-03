@@ -191,6 +191,106 @@ Authorization: Bearer your-secret-token
 | `-stats-file` | 空 | 统计持久化文件；为空时不持久化 |
 | `-stats-flush-interval` | `30s` | 统计数据定期写入文件的间隔 |
 | `-token` | 空 | 词库写操作令牌；为空时不启用鉴权 |
+| `-normalize` | `true` | 归一化输入以对抗变体绕过（`炸.药` → `炸药`）；亦可用环境变量 `NB_NORMALIZE` |
+| `-samples-file` | 空 | 语义样本库文件路径；留空则禁用；亦可用环境变量 `NB_SAMPLES` |
+| `-sample-threshold` | `0.75` | 语义样本相似度阈值（0-1），越高越严格；亦可用环境变量 `NB_SAMPLE_THRESHOLD` |
+| `-detect-mode` | `both` | 检测模式：`model_only` / `model_first` / `word_only` / `word_first` / `both`；亦可用环境变量 `NB_DETECT_MODE`；请求体 `mode` 可覆盖 |
+| `-recall-on-miss` | `false` | 优先链路**未命中**时补跑另一条链路以提高召回；亦可用环境变量 `NB_RECALL_ON_MISS`；请求体 `recall_on_miss` 可覆盖 |
+
+### 配置文件 config.env
+
+程序启动时会自动查找并加载 `config.env`（依次尝试**可执行文件所在目录**和**当前工作目录**），因此直接运行 `noblack` / `noblack.exe` 也能读到配置，无需经过启动脚本。可用 `-config <路径>` 显式指定。
+
+启动日志会明确打印配置来源，便于确认是否生效：
+
+```
+已加载配置文件: D:\...\config.env (生效 14 项)
+未找到 config.env, 使用默认配置与命令行参数 (可用 -config 指定路径)
+```
+
+配置优先级由低到高：**config.env → 环境变量 → 命令行参数 → 请求体字段**（后者覆盖前者）。文件中只有 `NB_` 前缀的大写键会生效，与启动脚本的解析规则一致。
+
+### 输入归一化（对抗变体绕过）
+
+黑产常在敏感词中间插入字符来绕过检测——`炸.药`、`炸 药`、`炸_药`、`炸​药`（零宽空格），或改用繁体 `槍支`。这些写法在字面上匹配不到词库，也会打断模型的语义信号。
+
+启用 `-normalize`（**默认开启**）后，词库匹配与模型推理都会先把输入还原为标准形式：
+
+| 处理 | 效果 |
+|------|------|
+| 去除标点、空白、Emoji、零宽字符、下划线 | `炸.药` `炸 药` `炸🔥药` → `炸药` |
+| 繁体转简体 | `槍支彈藥` → `枪支弹药`（2956 字对照表，源自 OpenCC） |
+| 全角转半角 | `Ｃ４` → `c4` |
+| 大小写折叠 | `C4炸药` → `c4炸药` |
+
+命中位置仍指向**原文**，且覆盖被剔除的干扰字符——`这里有炸.药教程` 返回 `[3,6)`，前端高亮能盖住完整的变体写法。
+
+实测：随机抽取词库中 150 个真实词条，中间插入一个点后，关闭归一化时仅 63 条被拦截，开启后 150 条全部拦截。正常文本（`价格是99.5元`、`test.user@example.com`）不受影响。
+
+> 词库与输入用同一套规则归一化，两侧在同一空间比较。`-normalize=false` 可退回纯字面匹配。
+
+繁简对照表由 `scripts/gen_traditional.py` 从 [OpenCC](https://github.com/BYVoid/OpenCC) 生成，Go 与 Python 两份表同源，测试会校验一致性。需要更新时：
+
+```bash
+pip install opencc-python-reimplemented
+python3 scripts/gen_traditional.py
+```
+
+### 语义样本库（补足模型漏报）
+
+模型权重无法在线更新，遇到漏报只能等下一轮微调。词库能补单词，但补不了"换几个字的同类句式"。样本库填补这个空档——把漏报的**整句**提交上来，立即生效。
+
+用 `-samples-file` 启用：
+
+```bash
+noblack -samples-file data/samples.json -sample-threshold 0.75
+```
+
+| 接口 | 说明 |
+|------|------|
+| `GET /samples` | 列出全部样本与当前阈值 |
+| `POST /samples` | 新增样本（需令牌） |
+| `DELETE /samples/{id}` | 删除样本（需令牌） |
+
+```bash
+# 提交一条模型漏报的句子
+curl -X POST http://localhost:8080/samples \
+  -H 'Content-Type: application/json' -H 'X-Auth-Token: <令牌>' \
+  -d '{"text":"漏报的整句原文","levels":["违法"],"remark":"模型漏报"}'
+```
+
+命中后 `/check` 返回 `decided_by: "sample"`，并在 `sample_matches` 里给出命中的样本与相似度。
+
+**工作原理**：把样本与待检文本都归一化后取字符 bigram 集合，算 Dice 相似度，超过阈值即判定命中。因此它能召回"改动几个字的改写版"，而不只是逐字相同的文本。
+
+**阈值取舍**（`-sample-threshold`，默认 0.75）：
+
+| 阈值 | 效果 |
+|------|------|
+| 0.6 以下 | 召回激进，同话题但无关的句子也可能被拦，误报风险高 |
+| **0.75** | 能容忍替换几个字或调整语序，实测不误拦正常文本 |
+| 0.9 以上 | 几乎只匹配逐字相同的文本，失去泛化能力 |
+
+> 样本库只在词库和模型都**没有**拦下来时才参与判定，不会覆盖更精确的归因。样本按归一化文本去重，`炸药教程` 与 `炸.药教程` 视为同一条。
+
+### 检测模式
+
+`-detect-mode` 决定词库与模型两条链路的编排方式：
+
+| 模式 | 行为 |
+|------|------|
+| `word_only` | 仅词库，完全不调用模型 |
+| `model_only` | 仅模型，技术失败时**不回退**词库 |
+| `model_first` | 模型优先，仅在模型**技术失败**时回退词库 |
+| `word_first` | 词库优先；词库不会技术失败，故模型仅用于未命中召回 |
+| `both` | 两条链路并行全跑，任一命中即拦截（默认，兼容历史行为） |
+
+> ⚠️ **"失败" 与 "未命中" 语义不同**：
+> **技术失败**（服务不可用/超时）触发 `model_first` 的降级回退；**未命中**（正常返回但判无风险）默认不触发任何回退，需显式开启 `-recall-on-miss` 才补跑另一条链路。
+>
+> 除 `both` 外的模式均为**串行短路**——优先链路命中即返回，省掉另一条链路的开销。
+
+响应中 `blocked` 为跨链路最终判定，`decided_by` 说明结论来源；`has_sensitive_word` 仅代表词库链路，保留用于兼容旧调用方。
 
 ### Docker 环境变量
 
@@ -203,6 +303,8 @@ Authorization: Bearer your-secret-token
 | `NB_CI` | `false` | `-ci` | 是否忽略英文大小写 |
 | `NB_WATCH` | `true` | `-watch` | 是否启用文件监听 |
 | `NB_MODEL_SERVICE_URL` | 空 | `-model-service-url` | 可选模型服务地址；为空时仅使用词库匹配 |
+| `NB_DETECT_MODE` | `both` | `-detect-mode` | 检测模式；留空使用默认值 |
+| `NB_RECALL_ON_MISS` | `false` | `-recall-on-miss` | 未命中时是否补跑另一条链路 |
 
 ## 热更新机制
 

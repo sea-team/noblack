@@ -15,6 +15,9 @@ type Options struct {
 	CaseInsensitive bool
 	// DefaultLevel 用于未显式标注等级的词条。为空则回退到 "Low"。
 	DefaultLevel string
+	// Normalize 为 true 时, 词条与输入都会先做归一化 (去标点/空白/零宽字符,
+	// 繁简、全半角、大小写折叠), 用于对抗 "炸.药" 这类插入字符的绕过手段。
+	Normalize bool
 }
 
 // Entry 是词库中的一个词条 (归一化后的内部/对外表示)。
@@ -146,6 +149,9 @@ func ValidateEntries(entries []Entry, opts Options) error {
 // 这些词共享相同的等级和备注。
 func BuildFromEntries(entries []Entry, opts Options) *Automaton {
 	b := NewBuilder(opts.CaseInsensitive)
+	if opts.Normalize {
+		b = NewNormalizedBuilder(opts.CaseInsensitive)
+	}
 	for _, e := range entries {
 		for _, w := range SplitWords(e.Word) {
 			b.Add(w, e.Levels, e.Remarks)

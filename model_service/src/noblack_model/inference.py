@@ -6,7 +6,7 @@ from typing import Any, Sequence
 
 import torch
 
-from noblack_data.pipeline import pinyin_features, stable_id
+from noblack_data.pipeline import normalize_for_model, pinyin_features, stable_id
 from .data import BatchCollator
 from .training import load_checkpoint
 
@@ -63,13 +63,20 @@ class SafetyPredictor:
                 chunk = list(texts[offset : offset + batch_size])
                 rows = []
                 for text in chunk:
-                    pinyin = pinyin_features(text)["pinyin_tone3"]
+                    # 归一化后再推理: "炸.药" 这类插入字符会打断模型的语义信号,
+                    # 还原为标准写法后模型才能正确判别。
+                    #
+                    # Go 服务已在调用前归一化, 这里是第二道防线 ——
+                    # 直接调用本服务 (自测、脚本、其他客户端) 时同样受保护。
+                    # 归一化后为空 (输入全是标点/Emoji) 时退回原文, 避免送空串。
+                    model_text = normalize_for_model(text) or text
+                    pinyin = pinyin_features(model_text)["pinyin_tone3"]
                     rows.append(
                         {
                             "id": stable_id("inference", text),
-                            "text": text,
+                            "text": model_text,
                             "pinyin": pinyin,
-                            "pair_text": text,
+                            "pair_text": model_text,
                             "pair_pinyin": pinyin,
                             "pair_mask": False,
                             "label": 0,

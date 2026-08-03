@@ -1,6 +1,6 @@
 ﻿param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("Start", "Stop")]
+    [ValidateSet("Start", "Stop", "StartModelOnly")]
     [string]$Action,
 
     [ValidateSet("Full", "Keywords")]
@@ -249,6 +249,18 @@ function Start-NoblackServices {
         if ((Get-NoblackSetting "NB_CI" "false") -eq "true") {
             $goArguments += "-ci"
         }
+        $detectMode = Get-NoblackSetting "NB_DETECT_MODE" ""
+        if (-not [string]::IsNullOrEmpty($detectMode)) {
+            # 仅词库模式下不启动模型服务, 依赖模型的检测模式无法工作,
+            # 提前拦截并给出可操作的提示, 避免 Go 进程启动即退出。
+            if ($Mode -ne "Full" -and @("model_only", "model_first") -contains $detectMode) {
+                throw "NB_DETECT_MODE=$detectMode requires the model service, but keywords-only mode is active. Use start.cmd instead, or set NB_DETECT_MODE to word_only/word_first/both."
+            }
+            $goArguments += @("-detect-mode", ('"{0}"' -f $detectMode))
+        }
+        if ((Get-NoblackSetting "NB_RECALL_ON_MISS" "false") -eq "true") {
+            $goArguments += "-recall-on-miss"
+        }
 
         $goProcess = Start-Process `
             -FilePath $GoExecutable `
@@ -275,8 +287,49 @@ function Start-NoblackServices {
     }
 }
 
+# 单独启动模型服务, 按 config.env 导出环境变量后拉起。
+# 直接双击 noblack-model.exe 会绕过 config.env, 端口等配置不生效, 故提供此入口。
+function Start-ModelServiceOnly {
+    Import-NoblackConfig
+    New-Item -ItemType Directory -Force -Path $DataDir, $LogDir | Out-Null
+
+    Assert-NotRunning $ModelPidFile $ModelExecutable "model service"
+    $modelPort = [int](Get-NoblackSetting "NB_MODEL_PORT" "8091")
+    if (Test-PortListening $modelPort) {
+        throw "Model port is already in use: $modelPort"
+    }
+
+    [Environment]::SetEnvironmentVariable("NB_PACKAGE_ROOT", $Root, "Process")
+    [Environment]::SetEnvironmentVariable("NB_MODEL_HOST", "127.0.0.1", "Process")
+    [Environment]::SetEnvironmentVariable("NB_MODEL_PORT", [string]$modelPort, "Process")
+    [Environment]::SetEnvironmentVariable("NB_MODEL_THREADS", (Get-NoblackSetting "NB_MODEL_THREADS" "2"), "Process")
+    [Environment]::SetEnvironmentVariable("NB_MODEL_COMBINE_POLICY", (Get-NoblackSetting "NB_MODEL_COMBINE_POLICY" "max"), "Process")
+    [Environment]::SetEnvironmentVariable("NB_MODEL_PASS_THRESHOLD", (Get-NoblackSetting "NB_MODEL_PASS_THRESHOLD" "0.15"), "Process")
+    [Environment]::SetEnvironmentVariable("NB_MODEL_BLOCK_THRESHOLD", (Get-NoblackSetting "NB_MODEL_BLOCK_THRESHOLD" "0.5"), "Process")
+    [Environment]::SetEnvironmentVariable("NB_LITE_MODEL", (Join-Path $Root "models\lite-production-v1"), "Process")
+    [Environment]::SetEnvironmentVariable("NB_MACBERT_MODEL", (Join-Path $Root "models\macbert-production-v1"), "Process")
+
+    Write-Host "[noblack] starting model service on port $modelPort (loading models takes a while)"
+    $modelProcess = Start-Process `
+        -FilePath $ModelExecutable `
+        -WorkingDirectory $Root `
+        -RedirectStandardOutput (Join-Path $LogDir "noblack-model.log") `
+        -RedirectStandardError (Join-Path $LogDir "noblack-model.error.log") `
+        -PassThru
+    Set-Content -LiteralPath $ModelPidFile -Value $modelProcess.Id -Encoding ASCII
+    if (-not (Wait-ModelReady $modelPort $modelProcess.Id)) {
+        Remove-Item -LiteralPath $ModelPidFile -Force -ErrorAction SilentlyContinue
+        throw "Model service failed to become ready; see $LogDir"
+    }
+    Write-Host "[noblack] model service ready: http://127.0.0.1:$modelPort"
+    Write-Host "[noblack] now start the main service with start.cmd, or run noblack.exe"
+}
+
 if ($Action -eq "Stop") {
     Stop-NoblackServices
+}
+elseif ($Action -eq "StartModelOnly") {
+    Start-ModelServiceOnly
 }
 else {
     Start-NoblackServices

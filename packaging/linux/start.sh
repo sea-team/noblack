@@ -159,6 +159,20 @@ fi
 if [ "${NB_CI:-false}" = "true" ]; then
   go_args+=(-ci)
 fi
+if [ -n "${NB_DETECT_MODE:-}" ]; then
+  # 仅词库模式下不启动模型服务, 依赖模型的检测模式无法工作,
+  # 提前拦截并给出可操作的提示, 避免 Go 进程启动即退出。
+  if [ "${NB_KEYWORDS_ONLY:-0}" = "1" ] && \
+     { [ "$NB_DETECT_MODE" = "model_only" ] || [ "$NB_DETECT_MODE" = "model_first" ]; }; then
+    echo "[noblack] NB_DETECT_MODE=$NB_DETECT_MODE requires the model service, but keywords-only mode is active." >&2
+    echo "[noblack] use start.sh instead, or set NB_DETECT_MODE to word_only/word_first/both." >&2
+    exit 1
+  fi
+  go_args+=(-detect-mode "$NB_DETECT_MODE")
+fi
+if [ "${NB_RECALL_ON_MISS:-false}" = "true" ]; then
+  go_args+=(-recall-on-miss)
+fi
 
 nohup "$ROOT/noblack" "${go_args[@]}" >>"$GO_LOG" 2>&1 &
 go_pid=$!

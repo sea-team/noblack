@@ -75,7 +75,7 @@
 | POST | `/words` | 新增一个词条 | JSON |
 | PUT | `/words/{word}` | 更新一个词条 | JSON |
 | DELETE | `/words/{word}` | 删除一个词条 | 无 |
-| GET | `/auth/status` | 查询是否需要写操作令牌 | 无 |
+| GET | `/auth/status` | 查询是否需要令牌（写操作 / 检测各一项） | 无 |
 | POST | `/auth/verify` | 校验令牌是否正确 | 无（令牌走请求头） |
 | GET | `/stats` | 查询运行统计（请求数、高频词等） | 无 |
 | POST | `/stats/reset` | 清零统计 | 无 |
@@ -105,11 +105,35 @@
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `text` | string | 是 | 待检测文本。缺失、空字符串或仅包含空白字符时返回 HTTP 400。 |
+| `mode` | string | 否 | 本次请求的检测模式，覆盖服务端 `-detect-mode` 默认值。取值见下表；非法值返回 HTTP 400。 |
+| `recall_on_miss` | bool | 否 | 本次请求是否开启未命中召回，覆盖服务端 `-recall-on-miss` 默认值。省略时沿用服务端配置；显式传 `false` 可关闭。 |
+
+**检测模式（`mode`）**
+
+| 取值 | 行为 |
+|------|------|
+| `word_only` | 仅词库。完全不调用模型。 |
+| `model_only` | 仅模型。模型技术失败时**不回退词库**，返回降级状态。 |
+| `model_first` | 模型优先。仅当模型**技术失败**（不可用/超时）时回退词库。 |
+| `word_first` | 词库优先。词库为纯内存匹配不会技术失败，因此模型仅在开启召回且词库未命中时才被调用。 |
+| `both` | 词库 + 模型并行全跑，任一命中即拦截。**默认值**，与历史行为一致。 |
+
+> ⚠️ **"失败" 与 "未命中" 是两回事**
+> - **技术失败**：模型服务不可用、超时、响应不合法 → 触发 `model_first` 的降级回退。
+> - **未命中**：链路正常返回但判定为无风险 → **不触发**降级；只有开启 `recall_on_miss` 才补跑另一条链路。
+>
+> 因此 `model_first` + 模型返回"无风险"时，默认**不会**再查词库；需要这种兜底请开启 `recall_on_miss`。
+
+> 🔒 `model_only` / `model_first` 在服务端未配置模型服务时返回 **HTTP 503**（而非静默放行）；`both` 在此情况下安全退化为纯词库。
 
 **请求体示例**
 
 ```json
 { "text": "有人在挖矿看PornHub" }
+```
+
+```json
+{ "text": "有人在挖矿看PornHub", "mode": "word_first", "recall_on_miss": true }
 ```
 
 ### 请求示例（curl）
@@ -158,13 +182,22 @@ curl -X POST http://localhost:8080/check \
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `data.has_sensitive_word` | bool | 是否命中任意敏感词。 |
-| `data.matches` | array | 命中列表；无命中时为空数组 `[]`（不是 `null`）。 |
+| `data.blocked` | bool | **最终判定**（推荐调用方使用）。综合当前模式下所有已执行链路的结论。 |
+| `data.decided_by` | string | 判定归因：`words`（词库）、`model`（模型）、`both`（两者均命中）、`none`（无命中）、`degraded`（模型技术失败且无其他依据）。 |
+| `data.detect_mode` | string | 本次实际生效的检测模式，回显请求覆盖后的值。 |
+| `data.recall_triggered` | bool | 本次是否触发了未命中召回补跑；未触发时不返回该字段。 |
+| `data.has_sensitive_word` | bool | 是否命中任意敏感词（**仅反映词库链路**）。未执行词库的模式下恒为 `false`。 |
+| `data.matches` | array | 词库命中列表；无命中时为空数组 `[]`（不是 `null`）。 |
 | `data.matches[].word` | string | 命中的敏感词原文（保留词库中的原始大小写）。 |
 | `data.matches[].levels` | string[] | 该词的等级列表，可能有多个，如 `["bilibili","引流"]`；恒为数组。 |
 | `data.matches[].remarks` | string[] | 该词的备注列表；无备注时为空数组 `[]`。 |
 | `data.matches[].position.start` | int | 命中起始下标，**按 rune（Unicode 字符）计**，含。 |
 | `data.matches[].position.end` | int | 命中结束下标，按 rune 计，**不含**。即区间 `[start, end)`。 |
+
+> 📌 **`blocked` vs `has_sensitive_word`**
+> `has_sensitive_word` 只代表词库链路的结果，为兼容旧调用方保留；`blocked` 才是跨链路的最终结论。
+> 例如 `model_only` 模式下模型判定拦截时，`blocked=true` 而 `has_sensitive_word=false`（词库根本没跑）。
+> **新接入请一律使用 `blocked`。**
 
 > 📌 **position 是 rune 下标，不是字节下标。** 例如文本 `有人在挖矿`，`挖矿` 的位置是 `[3,5)`（第 4、5 个字符），而不是按 UTF-8 字节算的 `[9,15)`。用 `text[start:end]`（Go 中 `[]rune(text)[start:end]`）即可截出原词。
 >
@@ -219,7 +252,16 @@ curl -X POST http://localhost:8080/check \
 
 用于在线增删改词条。**任何修改都会立即：① 重建检测树并原子生效；② 写回磁盘 `data/words.json`。** 期间 `/check` 读请求不阻塞。
 
-> 🔑 **写操作鉴权（可选）**：服务端用 `-token <令牌>` 启动后，**新增（POST）、更新（PUT）、删除（DELETE）** 需携带令牌，否则返回 **401**。**读操作 `GET /words` 及检测、统计不需要令牌。** 未设 `-token` 时全部开放（向后兼容）。
+> 🔑 **鉴权（可选，两个独立令牌）**
+>
+> | 令牌 | 启动参数 / 环境变量 | 保护范围 | 留空时 |
+> |------|--------------------|---------|--------|
+> | 管理令牌 | `-token` / `NB_TOKEN` | 词条**新增（POST）、更新（PUT）、删除（DELETE）**，以及 `POST /reload`、`POST /stats/reset` | 写操作开放 |
+> | 检测令牌 | `-detect-token` / `NB_DETECT_TOKEN` | `POST /check`、`GET /stats` | 检测开放，任何人可无限制调用 |
+>
+> **管理令牌权限更高，同样可以调用检测接口**；反之检测令牌不能做词库写操作。这样可以把检测令牌发给业务方调用，而不连带给出词库写权限。
+>
+> `GET /words`、`GET /levels`、`GET /health` 不需要任何令牌；`/health` 始终公开，以免健康探针失败。两个令牌都未设置时全部开放（向后兼容）。
 >
 > 令牌通过请求头传递，两种写法均可：
 > - `X-Auth-Token: <令牌>`
@@ -389,14 +431,17 @@ curl -X DELETE "http://localhost:8080/words/%E6%8C%96%E7%9F%BF"
 ### 2.5 鉴权端点
 
 **GET /auth/status** — 前端据此决定是否显示令牌输入框。
+`required` 表示写操作鉴权是否开启，`detect_required` 表示检测接口鉴权是否开启。
 
 ```bash
 curl http://localhost:8080/auth/status
-# {"code":200,"message":"success","data":{"required":true}}   # 已用 -token 启动
-# {"code":200,"message":"success","data":{"required":false}}  # 未启用鉴权
+# {"code":200,"message":"success","data":{"required":true,"detect_required":true}}    # 两种鉴权都已启用
+# {"code":200,"message":"success","data":{"required":false,"detect_required":false}}  # 均未启用
 ```
 
-**POST /auth/verify** — 校验令牌是否正确（令牌走请求头）。
+> 前端在任一项为 `true` 时显示令牌输入框：只启用检测鉴权时，页面上的检测测试和统计查询同样需要令牌。
+
+**POST /auth/verify** — 校验令牌是否正确（令牌走请求头）。管理令牌或检测令牌任一匹配即视为有效。
 
 ```bash
 curl -X POST http://localhost:8080/auth/verify -H "X-Auth-Token: s3cret"
@@ -404,7 +449,7 @@ curl -X POST http://localhost:8080/auth/verify -H "X-Auth-Token: s3cret"
 # 错误 → HTTP 401 {"code":401,"message":"令牌无效或缺失"}
 ```
 
-> 写操作（POST/PUT/DELETE `/words`）令牌错误或缺失时统一返回 **HTTP 401** `{"code":401,"message":"令牌无效或缺失"}`。
+> 写操作（POST/PUT/DELETE `/words`）以及检测接口（`POST /check`、`GET /stats`）令牌错误或缺失时，统一返回 **HTTP 401** `{"code":401,"message":"令牌无效或缺失"}`。
 
 ---
 
@@ -647,7 +692,7 @@ curl http://localhost:8080/health
 
 | 接口 | 方法 | 请求体 |
 |------|------|--------|
-| `/check` | POST | `{"text": "字符串"}` |
+| `/check` | POST | `{"text": "字符串", "mode"?: "word_only\|model_only\|model_first\|word_first\|both", "recall_on_miss"?: bool}` |
 | `/words` | GET | 无 |
 | `/words` | POST | `{"word","levels":[],"remarks":[]}` |
 | `/words/{word}` | PUT | `{"levels":[],"remarks":[]}` |
@@ -662,7 +707,7 @@ curl http://localhost:8080/health
 
 | 接口 | data 结构 |
 |------|-----------|
-| `/check` | `{ has_sensitive_word: bool, matches: [{ word, levels[], remarks[], position:{start,end} }] }` |
+| `/check` | `{ blocked: bool, decided_by: string, detect_mode: string, recall_triggered?: bool, has_sensitive_word: bool, matches: [{ word, levels[], remarks[], position:{start,end} }] }` |
 | `GET /words` | `{ count: int, page: int, page_size: int, total_pages: int, words: [{ word, levels[], remarks[] }] }` |
 | `POST/PUT /words` | `{ word, levels[], remarks[] }` |
 | `DELETE /words` | `{ word }` |

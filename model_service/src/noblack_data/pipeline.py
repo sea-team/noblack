@@ -13,6 +13,8 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
 
+from noblack_data.traditional import to_simplified
+
 try:
     from pypinyin import Style, lazy_pinyin
 except ImportError as exc:  # pragma: no cover - covered by CLI dependency check
@@ -123,6 +125,23 @@ def normalize_text(text: str) -> str:
 
 def compact_text(text: str) -> str:
     return NON_WORD_RE.sub("", normalize_text(text))
+
+
+# compact_text 用的 \w 包含下划线, 而下划线正是常见的插入绕过字符 (炸_药),
+# 必须一并剔除, 否则与 Go 侧规则不一致。
+MODEL_NOISE_RE = re.compile(r"[^\w㐀-鿿]+|_+", re.UNICODE)
+
+
+def normalize_for_model(text: str) -> str:
+    """把用户输入还原为标准形式, 用于对抗变体字绕过。
+
+    黑产常在敏感词中间插入标点/空白/零宽字符 (炸.药、萝 莉、炸_药), 或使用
+    繁体字 (槍支)。这些变体会打断模型的语义信号导致漏报。推理前统一还原。
+
+    与 Go 侧 internal/normalize 保持同一规则:
+    去除标点/空白/Emoji/零宽字符/下划线, 繁体转简体, 全角转半角, 小写化。
+    """
+    return to_simplified(MODEL_NOISE_RE.sub("", normalize_text(text)))
 
 
 def stable_id(*parts: str, length: int = 16) -> str:

@@ -22,6 +22,13 @@ SRC = SOURCE_ROOT / "model_service" / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from noblack_model.envfile import load_default as _load_config_env  # noqa: E402
+
+# 必须在读取任何 NB_* 环境变量之前加载: 下面的模块级常量
+# (端口、线程数、阈值、模型路径) 都在 import 阶段就地求值,
+# 晚于此处加载则读不到 config.env 的内容。
+_CONFIG_PATH, _CONFIG_KEYS = _load_config_env()
+
 import torch  # noqa: E402
 from noblack_model.inference import SafetyPredictor  # noqa: E402
 from noblack_model.policy import (  # noqa: E402
@@ -223,6 +230,12 @@ def main() -> None:
         }, ensure_ascii=False), flush=True)
         RUNTIME.executor.shutdown(wait=True, cancel_futures=True)
         return
+
+    # 明确告知配置来源: 配置静默失效时, 日志里看不出有没有读到文件。
+    if _CONFIG_PATH is not None:
+        print(f"[model-service] loaded config {_CONFIG_PATH} ({_CONFIG_KEYS} keys)", flush=True)
+    else:
+        print("[model-service] no config.env found; using defaults and environment", flush=True)
 
     host = os.getenv("NB_MODEL_HOST", "127.0.0.1")
     port = int(os.getenv("NB_MODEL_PORT", "8091"))

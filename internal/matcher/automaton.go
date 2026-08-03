@@ -16,6 +16,8 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+
+	"noblack/internal/normalize"
 )
 
 // Level 现在只是一个普通字符串别名, 不限定取值。
@@ -58,6 +60,13 @@ type Automaton struct {
 	size            int      // 词条总数
 	levels          []string // 词库中出现过的全部等级 (已排序去重)
 	caseInsensitive bool     // 是否大小写不敏感 (主要惠及英文)
+	normalized      bool     // 词条是否已归一化 (决定应走 FindAll 还是 FindAllNormalized)
+}
+
+// Normalized 报告该自动机的词条是否按归一化规则构建。
+// 为 true 时应调用 FindAllNormalized, 否则输入与词条不在同一空间。
+func (a *Automaton) Normalized() bool {
+	return a != nil && a.normalized
 }
 
 // Match 描述一次命中结果。
@@ -101,9 +110,11 @@ type Builder struct {
 	count           int
 	levelSet        map[string]struct{}
 	caseInsensitive bool
+	normalized      bool
 }
 
 // NewBuilder 创建构建器。caseInsensitive=true 时匹配大小写不敏感。
+// 按字面构建, 不做归一化 (保留原有行为)。
 func NewBuilder(caseInsensitive bool) *Builder {
 	return &Builder{
 		root:            newNode(),
@@ -112,15 +123,34 @@ func NewBuilder(caseInsensitive bool) *Builder {
 	}
 }
 
+// NewNormalizedBuilder 创建会把词条归一化后入树的构建器,
+// 供 FindAllNormalized 使用 —— 两侧必须用同一规则处理才能匹配上。
+func NewNormalizedBuilder(caseInsensitive bool) *Builder {
+	builder := NewBuilder(caseInsensitive)
+	builder.normalized = true
+	return builder
+}
+
 // Add 插入一个词条及其元信息。word 为空则忽略; 重复词条以后插入者为准。
 // levels 支持一个词条挂多个等级; 传空时该词条无等级。
 func (b *Builder) Add(word string, levels []Level, remarks []string) {
 	if word == "" {
 		return
 	}
+	// 键用归一化后的词, 与 FindAllNormalized 的输入处于同一空间;
+	// meta.Word 仍保留原始写法, 命中结果对外展示的是词库里的原文。
+	//
+	// 词条本身若含标点 (如 "a.b"), 归一化后会变成 "ab" —— 这是有意的:
+	// 输入端同样会被归一化, 两侧一致才能匹配。
+	key := word
+	if b.normalized {
+		if folded := normalize.Text(word); folded != "" {
+			key = folded
+		}
+	}
 	cur := b.root
 	depth := 0
-	for _, r := range word { // range string 天然按 rune 迭代
+	for _, r := range key { // range string 天然按 rune 迭代
 		depth++
 		rr := fold(r, b.caseInsensitive)
 		next, ok := cur.children[rr]
@@ -197,11 +227,41 @@ func (b *Builder) Build() *Automaton {
 		size:            b.count,
 		levels:          levels,
 		caseInsensitive: b.caseInsensitive,
+		normalized:      b.normalized,
 	}
+}
+
+// FindAllNormalized 先归一化 text 再匹配, 用于对抗变体字绕过。
+//
+// 归一化会剔除标点/空白/零宽字符并做繁简、全半角、大小写折叠, 因此
+// "炸.药" / "炸 药" / "槍藥" 这类写法都能命中词库中的 "炸药"。
+//
+// 返回的 Match 位置已换算回**原文** rune 下标, 且覆盖被剔除的干扰字符:
+// "炸.药" 命中 "炸药" 时返回 [0,3), 前端高亮能盖住完整的变体写法。
+//
+// 词库词条本身也按同一规则归一化后写入自动机 (见 Builder.Add),
+// 保证两侧在同一空间比较。不修改自动机状态, 并发安全。
+func (a *Automaton) FindAllNormalized(text string) []Match {
+	if a == nil || a.root == nil {
+		return nil
+	}
+	result := normalize.Normalize(text)
+	if result.Text == "" {
+		return nil
+	}
+	matches := a.FindAll(result.Text)
+	for i := range matches {
+		start, end := result.MapRange(matches[i].Start, matches[i].End)
+		matches[i].Start = start
+		matches[i].End = end
+	}
+	return matches
 }
 
 // FindAll 查找 text 中所有命中 (含重叠)。时间复杂度 O(n + z), 与词库规模无关。
 // 不修改自动机状态, 并发安全。
+//
+// 注意: 按字面匹配, 不做归一化。需要对抗变体字绕过请用 FindAllNormalized。
 func (a *Automaton) FindAll(text string) []Match {
 	if a == nil || a.root == nil {
 		return nil
