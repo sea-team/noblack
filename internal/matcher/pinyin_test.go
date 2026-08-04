@@ -185,3 +185,75 @@ func TestMinPinyinLengthGuard(t *testing.T) {
 			normalize.MinPinyinLength)
 	}
 }
+
+// 快速跳过必须只跳过不可能命中的输入, 不能漏掉真实的拼音绕过。
+func TestPinyinFastPathCorrectness(t *testing.T) {
+	entries := []Entry{{Word: "枪支弹药", Levels: []string{"High"}}}
+	a := BuildFromEntries(entries, Options{Normalize: true, Pinyin: true})
+
+	cases := []struct {
+		name string
+		text string
+		want bool // 是否应命中
+	}{
+		{"纯中文-无字母-应跳过", "今天天气不错我们去公园散步", false},
+		{"纯中文-含词库词-字面命中", "购买枪支弹药", true},
+		{"中英混排-拼音绕过", "哪里买qiangzhidanyao", true},
+		{"大写拼音绕过", "哪里买QIANGZHIDANYAO", true},
+		{"带声调拼音绕过", "哪里买qiāngzhīdànyào", true},
+		{"含无关英文-不应命中", "今天开会discuss项目进度", false},
+		{"含数字-不应命中", "订单号12345已发货", false},
+		{"日常英文缩写-字母太少应跳过", "他是CEO用PS修图", false},
+		{"英文单词-不应命中", "这个API接口有bug需要fix", false},
+		{"空文本", "", false},
+		{"纯标点", "！？。，", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := len(a.FindAllNormalized(tc.text)) > 0
+			if got != tc.want {
+				t.Errorf("命中=%v, 期望 %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// needsPinyinScan 的判据本身。
+func TestNeedsPinyinScan(t *testing.T) {
+	cases := []struct {
+		text string
+		want bool
+	}{
+		{"今天天气不错", false},         // 纯中文
+		{"", false},               // 空
+		{"12345", false},          // 纯数字
+		{"ceo", false},            // 3 字母, 低于阈值
+		{"apibug", false},         // 6 字母, 低于阈值
+		{"discuss", false},        // 7 字母, 低于阈值 (日常英文上界)
+		{"qiangzhi", true},        // 8 字母, 达到阈值
+		{"qiangzhidanyao", true},  // 14 字母
+		{"怎么做zhayaoshenme", true}, // 中英混排, 字母足够
+		{"我在cbd上班用ps修图", false},   // 混排但字母总数仅 5
+	}
+	for _, tc := range cases {
+		if got := needsPinyinScan(tc.text); got != tc.want {
+			t.Errorf("needsPinyinScan(%q)=%v, 期望 %v", tc.text, got, tc.want)
+		}
+	}
+}
+
+// 逐 rune 映射产出的拼音串必须与整串转换完全一致, 否则位置换算会错位。
+func TestPinyinMappingMatchesWholeString(t *testing.T) {
+	for _, text := range []string{
+		"今天天气不错",
+		"怎么做zhayao谁有xingdang",
+		"混合ABC123中文",
+		"qiāngzhīdànyào",
+		"！？。，符号",
+	} {
+		mapping := buildPinyinMapping(text)
+		if want := normalize.Pinyin(text); mapping.pinyin != want {
+			t.Errorf("文本 %q: 逐rune=%q, 整串=%q", text, mapping.pinyin, want)
+		}
+	}
+}

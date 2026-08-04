@@ -59,10 +59,10 @@ func buildPinyinMapping(normalized string) pinyinMapping {
 		starts: make([]int, len(runes)),
 		ends:   make([]int, len(runes)),
 	}
-	var builder []byte
+	builder := make([]byte, 0, len(runes)*3)
 	for i, r := range runes {
 		mapping.starts[i] = len(builder)
-		builder = append(builder, []byte(normalize.Pinyin(string(r)))...)
+		builder = normalize.AppendPinyinRune(builder, r)
 		mapping.ends[i] = len(builder)
 	}
 	mapping.pinyin = string(builder)
@@ -94,13 +94,53 @@ func (m pinyinMapping) mapRange(start, end int) (int, int, bool) {
 	return runeStart, runeEnd, true
 }
 
-// findAll 在文本中查找拼音命中, 返回的位置已换算回**原文** rune 下标。
-func (p *pinyinAutomaton) findAll(text string) []Match {
-	if p == nil || p.inner == nil {
+// minLettersForPinyinScan 是触发拼音扫描所需的最少字母数。
+//
+// 拼音索引的键最短 MinPinyinLength (10) 个字母, 但输入侧是中英混排,
+// 键的一部分可能由汉字转出的拼音补足, 所以输入里的字母可以少于 10。
+//
+// 实测:
+//   - 拼音绕过样本 (qiangzhidanyao / qiang zhi dan yao / weijinwupin)
+//     字母总数最少 11
+//   - 日常英文缩写 (CEO / PDF / WiFi / iPhone / discuss / API+bug)
+//     字母总数最多 7
+//
+// 取 8 落在两者之间: 挡掉全部日常缩写, 又给真实绕过留出余量。
+const minLettersForPinyinScan = 8
+
+// needsPinyinScan 判断文本是否可能命中拼音索引。
+//
+// 拼音索引的键全是小写 ASCII 字母 (zhayao、qiangzhidanyao), 因此:
+//   - 纯中文输入不可能命中, 直接跳过 (真实流量的绝大多数)
+//   - 字母太少也不可能凑出一个拼音键, 同样跳过 —— "他是CEO"、"用PS修图"
+//     这类日常写法无需付出转拼音 + 二次匹配的代价
+//
+// 统计的是**字母总数**而非最长连续段: 绕过写法常被中文切碎
+// ("怎么做zha yao谁有xing dang"), 最长段可能只有 3~4, 但总数足够。
+func needsPinyinScan(normalized string) bool {
+	letters := 0
+	for _, r := range normalized {
+		if r >= 'a' && r <= 'z' {
+			letters++
+			if letters >= minLettersForPinyinScan {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// findAllNormalized 在已归一化的文本上查找拼音命中。
+//
+// 复用调用方已算好的 normalize.Result, 避免重复归一化 ——
+// FindAllNormalized 紧接着调用本函数, 两次归一化是纯浪费。
+// 返回的位置已换算回**原文** rune 下标。
+func (p *pinyinAutomaton) findAllNormalized(result normalize.Result) []Match {
+	if p == nil || p.inner == nil || result.Text == "" {
 		return nil
 	}
-	result := normalize.Normalize(text)
-	if result.Text == "" {
+	// 快速跳过: 纯中文输入不可能匹配全字母的拼音键。
+	if !needsPinyinScan(result.Text) {
 		return nil
 	}
 	mapping := buildPinyinMapping(result.Text)

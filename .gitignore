@@ -7,3 +7,7 @@ model_service/src/**/__pycache__/
 scripts/tests/__pycache__/
 *.py[cod]
 data/model-service.*.log
+
+# 压测工具的编译产物
+scripts/loadtest/loadtest
+scripts/loadtest/loadtest.exe

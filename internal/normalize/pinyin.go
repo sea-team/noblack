@@ -1,6 +1,6 @@
 package normalize
 
-import "strings"
+import "unicode/utf8"
 
 // MinPinyinLength 是参与拼音匹配的最小拼音长度。
 //
@@ -31,16 +31,29 @@ func Pinyin(text string) string {
 	if text == "" {
 		return ""
 	}
-	var builder strings.Builder
-	builder.Grow(len(text) * 2)
+	// 与 AppendPinyinRune 共用同一套规则: 两处若不一致,
+	// 逐 rune 建立的位置映射会与整串拼音错位。
+	buf := make([]byte, 0, len(text)*2)
 	for _, r := range text {
-		if py, ok := hanziPinyin[r]; ok {
-			builder.WriteString(py)
-			continue
-		}
-		builder.WriteRune(foldTone(r))
+		buf = AppendPinyinRune(buf, r)
 	}
-	return strings.ToLower(builder.String())
+	return string(buf)
+}
+
+// AppendPinyinRune 把单个 rune 的拼音追加到 dst 并返回结果。
+//
+// 汉字追加其拼音, 非汉字追加折叠声调后的自身 (小写)。
+// 供逐 rune 建立位置映射时使用: 直接查表追加, 避免
+// Pinyin(string(r)) 那样为每个字符装箱出两个临时字符串。
+func AppendPinyinRune(dst []byte, r rune) []byte {
+	if py, ok := hanziPinyin[r]; ok {
+		return append(dst, py...)
+	}
+	folded := foldTone(r)
+	if folded >= 'A' && folded <= 'Z' {
+		folded += 'a' - 'A'
+	}
+	return utf8.AppendRune(dst, folded)
 }
 
 // PinyinIndexable 判断一个词条是否适合建立拼音索引。

@@ -387,12 +387,90 @@ func newClient(cfg *config, conc int) *http.Client {
 	return &http.Client{Transport: tr, Timeout: cfg.timeout}
 }
 
+// getWithRetry 带退避重试的 GET。
+//
+// 高并发压测结束后, 本机与服务端的连接尚未完全释放, 紧接着的探测请求
+// 很容易超时 —— 此时服务其实是好的, 直接判定 "探测失败" 会让整轮压测
+// 白跑。实测连续跑 400/1000 并发时, 约一半轮次会栽在这里。
+func getWithRetry(client *http.Client, url string, attempts int) (*http.Response, error) {
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		if i > 0 {
+			// 退避 2s, 4s, 8s: 给 TIME_WAIT 连接和服务端 accept 队列留出清空时间
+			backoff := time.Duration(1<<uint(i)) * time.Second
+			fmt.Printf("  探测失败 (%v), %s 后重试 (%d/%d)\n", lastErr, backoff, i+1, attempts)
+			time.Sleep(backoff)
+		}
+		resp, err := client.Get(url)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+// cooldown 按刚跑完的并发量决定冷却时长。
+//
+// 固定 2 秒对高并发远远不够: 1000 并发会留下大量 TIME_WAIT 连接,
+// 不等它们释放就开下一级, 测出的吞吐会明显偏低 —— 这正是
+// "并发 400 比 1000 跑得还快" 这类反直觉结果的主因。
+func cooldown(conc int) {
+	seconds := 2
+	switch {
+	case conc >= 500:
+		seconds = 20
+	case conc >= 200:
+		seconds = 12
+	case conc >= 64:
+		seconds = 6
+	}
+	if seconds > 2 {
+		fmt.Printf("  冷却 %ds (并发 %d 的连接需要时间释放)...\n", seconds, conc)
+	}
+	time.Sleep(time.Duration(seconds) * time.Second)
+}
+
+// waitReady 在下一级开始前确认服务已恢复正常响应。
+//
+// 仅靠固定冷却不够: 连接释放速度受本机端口回收与服务端状态影响, 不是定值。
+// 这里用一个全新连接实测一次 /health, 响应正常才继续 —— 否则测出的
+// 是 "服务还没缓过来" 的数字, 而不是它的真实容量。
+func waitReady(cfg *config, maxWait time.Duration) {
+	deadline := time.Now().Add(maxWait)
+	// 独立客户端并禁用连接复用, 避免拿到压测遗留的坏连接
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			DisableKeepAlives: true,
+			TLSClientConfig:   &tls.Config{InsecureSkipVerify: cfg.insecure},
+		},
+	}
+	url := strings.TrimRight(cfg.baseURL, "/") + "/health"
+	for attempt := 1; time.Now().Before(deadline); attempt++ {
+		resp, err := client.Get(url)
+		if err == nil {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				if attempt > 1 {
+					fmt.Printf("  服务已恢复 (等待 %d 次)\n", attempt)
+				}
+				return
+			}
+		}
+		fmt.Printf("  等待服务恢复中... (第 %d 次探测未通过)\n", attempt)
+		time.Sleep(5 * time.Second)
+	}
+	fmt.Printf("  ⚠ 等待 %s 服务仍未恢复, 继续下一级 (结果可能偏低)\n", maxWait)
+}
+
 // probe 探测服务形态: 检测模式、是否启用模型、鉴权状态。
 func probe(cfg *config) error {
 	client := newClient(cfg, 4)
 	base := strings.TrimRight(cfg.baseURL, "/")
 
-	resp, err := client.Get(base + "/health")
+	resp, err := getWithRetry(client, base+"/health", 4)
 	if err != nil {
 		return fmt.Errorf("健康检查失败: %w", err)
 	}
@@ -469,7 +547,10 @@ func sceneRamp(ctx context.Context, cfg *config, mode string, texts []string, ti
 				return
 			}
 		}
-		time.Sleep(2 * time.Second) // 级间冷却, 让服务喘口气
+		cooldown(c)
+		if c >= 64 {
+			waitReady(cfg, 60*time.Second)
+		}
 	}
 }
 
@@ -488,7 +569,10 @@ func sceneModes(ctx context.Context, cfg *config, texts []string) {
 		if ctx.Err() != nil {
 			return
 		}
-		time.Sleep(2 * time.Second)
+		cooldown(conc)
+		if conc >= 64 {
+			waitReady(cfg, 60*time.Second)
+		}
 	}
 	// 召回开关的代价
 	fmt.Printf("\n=== word_first 召回开关对比 (并发 %d) ===\n", conc)
@@ -503,7 +587,10 @@ func sceneModes(ctx context.Context, cfg *config, texts []string) {
 		if ctx.Err() != nil {
 			return
 		}
-		time.Sleep(2 * time.Second)
+		cooldown(conc)
+		if conc >= 64 {
+			waitReady(cfg, 60*time.Second)
+		}
 	}
 }
 
@@ -537,7 +624,10 @@ func sceneTextLen(ctx context.Context, cfg *config) {
 		if ctx.Err() != nil {
 			return
 		}
-		time.Sleep(2 * time.Second)
+		cooldown(conc)
+		if conc >= 64 {
+			waitReady(cfg, 60*time.Second)
+		}
 	}
 }
 

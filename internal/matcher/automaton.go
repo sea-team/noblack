@@ -279,7 +279,8 @@ func (a *Automaton) FindAllNormalized(text string) []Match {
 	}
 
 	// 拼音命中作为补充: 字面已命中的同一 (词, 位置) 不重复上报。
-	if pinyinMatches := a.pinyin.findAll(text); len(pinyinMatches) > 0 {
+	// 复用上面算好的 result, 不重复归一化。
+	if pinyinMatches := a.pinyin.findAllNormalized(result); len(pinyinMatches) > 0 {
 		seen := make(map[matchKey]struct{}, len(matches))
 		for _, m := range matches {
 			seen[matchKey{m.Word, m.Start, m.End}] = struct{}{}
