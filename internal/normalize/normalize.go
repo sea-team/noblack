@@ -68,8 +68,9 @@ func isNoise(r rune) bool {
 // 处理顺序 (逐 rune, 保证 1:1 或 1:0, 索引映射始终精确):
 //  1. 全角转半角 —— Ｎ→N、０→0, 覆盖全角数字/字母/标点。
 //  2. 繁体转简体 —— 槍支→枪支。
-//  3. 剔除干扰字符 —— 炸.药→炸药, 含标点/空白/Emoji/控制符。
-//  4. 小写化 —— 大小写变体归一。
+//  3. 拼音声调折叠 —— yào→yao、xǐnɡ→xing, 供拼音匹配使用。
+//  4. 剔除干扰字符 —— 炸.药→炸药, 含标点/空白/Emoji/控制符。
+//  5. 小写化 —— 大小写变体归一。
 //
 // 不引入 x/text 依赖: 这里只做全角→半角的宽度折叠, 而非完整 NFKC。
 // 完整 NFKC 会把 ㈠ 展开成 (一) 等一对多映射, 对本场景收益有限,
@@ -83,7 +84,7 @@ func Normalize(text string) Result {
 	indices := make([]int, 0, len(originalRunes))
 
 	for originalIndex, original := range originalRunes {
-		converted := toSimplified(foldWidth(original))
+		converted := foldTone(toSimplified(foldWidth(original)))
 		if isNoise(converted) {
 			continue
 		}

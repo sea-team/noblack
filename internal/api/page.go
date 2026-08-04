@@ -63,6 +63,7 @@ const indexHTML = `<!DOCTYPE html>
 <div class="tabs">
   <div class="tab active" data-tab="check">🔍 检测</div>
   <div class="tab" data-tab="words">📚 词库管理</div>
+  <div class="tab" data-tab="samples">🧩 语义样本库</div>
   <div class="tab" data-tab="stats">📊 统计</div>
 </div>
 <main>
@@ -72,6 +73,7 @@ const indexHTML = `<!DOCTYPE html>
       <h3>敏感词检测</h3>
       <textarea id="check-text" placeholder="输入要检测的文本…"></textarea>
       <div class="row"><button onclick="doCheck()">检测</button>
+        <button class="ghost" onclick="addSampleFromCheck()" title="把当前文本加入语义样本库, 用于补足模型漏报">🧩 加入样本库</button>
         <span class="muted" id="check-hint"></span></div>
       <div id="check-result"></div>
     </div>
@@ -125,6 +127,50 @@ const indexHTML = `<!DOCTYPE html>
     </div>
   </section>
 
+  <!-- 语义样本库 -->
+  <section class="panel" id="panel-samples">
+    <div class="card" id="sample-disabled" style="display:none;border-color:#eab308">
+      <h3 style="margin-top:0">语义样本库未启用</h3>
+      <p class="muted">样本库用整句相似度补足模型漏报：把模型没识别出的整句提交上来，立即生效，无需重新训练。</p>
+      <p class="muted">启用方式：在 <code>config.env</code> 中设置样本库文件路径，然后重启服务。</p>
+      <pre style="background:#0f172a;padding:12px;border-radius:6px;overflow-x:auto">NB_SAMPLES=data/samples.json
+NB_SAMPLE_THRESHOLD=0.75</pre>
+      <p class="muted">阈值范围 0～1，越低召回越激进但误报升高；越高越严格但只能匹配几乎逐字相同的文本。</p>
+    </div>
+    <div id="sample-main" style="display:none">
+      <div class="card">
+        <div class="row" style="justify-content:space-between">
+          <h3 style="margin:0">新增样本</h3>
+          <span class="muted" id="sample-meta"></span>
+        </div>
+        <p class="muted" style="margin:6px 0 10px">把模型漏报的<b>整句</b>贴进来。检测时用字符 n-gram 相似度召回相似句式，因此样本越接近真实写法效果越好。</p>
+        <textarea id="s-text" rows="3" placeholder="例：今晚老公不在家，寂寞难耐，谁来陪我做快乐的事，加我微信。"></textarea>
+        <div class="row" style="margin-top:8px">
+          <div style="flex:1"><label class="muted">风险等级（逗号分隔）</label>
+            <input id="s-levels" placeholder="High"></div>
+          <div style="flex:2"><label class="muted">备注（为什么加这条）</label>
+            <input id="s-remark" placeholder="模型漏报的招嫖话术"></div>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <button onclick="addSample()">➕ 添加样本</button>
+          <button class="ghost" onclick="clearSampleForm()">清空</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="row" style="justify-content:space-between">
+          <h3 style="margin:0">样本列表</h3>
+          <div><span class="muted" id="sample-count"></span>
+            <button class="ghost sm" onclick="loadSamples()">↻ 刷新</button></div>
+        </div>
+        <table><thead><tr>
+          <th>样本文本</th><th style="width:110px">等级</th>
+          <th style="width:160px">备注</th><th style="width:150px">添加时间</th>
+          <th style="width:70px">操作</th>
+        </tr></thead><tbody id="sample-tbody"></tbody></table>
+      </div>
+    </div>
+  </section>
+
   <!-- 统计 -->
   <section class="panel" id="panel-stats">
     <div class="card">
@@ -172,6 +218,7 @@ document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
   document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));
   t.classList.add('active'); $('#panel-'+t.dataset.tab).classList.add('active');
   if(t.dataset.tab==='words') loadWords();
+  if(t.dataset.tab==='samples') loadSamples();
   if(t.dataset.tab==='stats') loadStats();
 });
 function lvlClass(l){ l=l.toLowerCase(); if(l==='high')return'lvl-high'; if(l==='medium')return'lvl-mid'; if(l==='low')return'lvl-low'; return''; }
@@ -240,9 +287,33 @@ function renderCheck(text, d){
     keywordHTML='<div class="card" style="background:#0f172a"><h3>\u8bcd\u5e93\u547d\u4e2d</h3><div style="line-height:1.9;margin-bottom:12px">'+highlighted+'</div>'+
       '<table><thead><tr><th>\u547d\u4e2d\u8bcd</th><th>\u7b49\u7ea7</th><th>\u5907\u6ce8</th><th>\u4f4d\u7f6e</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
   }
-  box.innerHTML=modelHTML+keywordHTML;
+  // 语义样本库命中: 词库与模型都没拦下时的兜底链路, 单独展示便于排查
+  let sampleHTML='';
+  const sms=d.sample_matches||[];
+  if(sms.length){
+    const rows=sms.map(s=>{
+      const lv=(s.levels||[]).map(l=>'<span class="lvl '+lvlClass(l)+'">'+esc(l)+'</span>').join(' ')||'<span class="muted">\u2014</span>';
+      const pct=(s.similarity*100).toFixed(1)+'%';
+      return '<tr><td style="word-break:break-all">'+esc(s.text)+'</td><td>'+lv+'</td>'+
+        '<td class="muted">'+(s.remark?esc(s.remark):'\u2014')+'</td>'+
+        '<td style="color:#38bdf8;font-weight:600">'+pct+'</td></tr>';
+    }).join('');
+    sampleHTML='<div class="card" style="background:#0f172a;border-color:#38bdf8"><h3>\ud83e\udde9 \u8bed\u4e49\u6837\u672c\u5e93\u547d\u4e2d</h3>'+
+      '<p class="muted" style="margin:0 0 10px">\u8bcd\u5e93\u4e0e\u6a21\u578b\u5747\u672a\u62e6\u622a, \u7531\u6837\u672c\u5e93\u6309\u76f8\u4f3c\u5ea6\u53ec\u56de\u3002</p>'+
+      '<table><thead><tr><th>\u76f8\u4f3c\u6837\u672c</th><th style="width:90px">\u7b49\u7ea7</th><th style="width:150px">\u5907\u6ce8</th><th style="width:80px">\u76f8\u4f3c\u5ea6</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+  }
+  // 最终结论: blocked 才是综合判定, has_sensitive_word 只表示词库命中
+  const by={words:'\u8bcd\u5e93',model:'AI \u6a21\u578b',sample:'\u8bed\u4e49\u6837\u672c\u5e93',both:'\u8bcd\u5e93+\u6a21\u578b',none:'\u65e0'}[d.decided_by]||d.decided_by||'\u65e0';
+  const verdictHTML='<div class="card" style="background:#0f172a;border-color:'+(d.blocked?'#ef4444':'#65a30d')+'">'+
+    '<div class="row" style="margin:0;justify-content:space-between">'+
+    '<h3 style="margin:0">'+(d.blocked?'\ud83d\udeab \u5efa\u8bae\u62e6\u622a':'\u2705 \u5efa\u8bae\u653e\u884c')+'</h3>'+
+    '<span class="muted">\u5224\u5b9a\u6765\u6e90: '+esc(by)+' \u00b7 \u68c0\u6d4b\u6a21\u5f0f: '+esc(d.detect_mode||'')+
+    (d.recall_triggered?' \u00b7 \u5df2\u89e6\u53d1\u53ec\u56de':'')+'</span></div></div>';
+
+  box.innerHTML=verdictHTML+modelHTML+keywordHTML+sampleHTML;
   const modelCount=(d.model_results||[]).length;
-  $('#check-hint').textContent='AI '+modelCount+' \u4e2a\u6a21\u578b \u00b7 \u8bcd\u5e93\u547d\u4e2d '+(d.matches||[]).length+' \u5904';
+  $('#check-hint').textContent='AI '+modelCount+' \u4e2a\u6a21\u578b \u00b7 \u8bcd\u5e93\u547d\u4e2d '+(d.matches||[]).length+' \u5904'+
+    (sms.length?' \u00b7 \u6837\u672c\u547d\u4e2d '+sms.length+' \u5904':'');
 }
 
 // ---- 词库 ----
@@ -333,6 +404,84 @@ async function delWord(word){
   catch(e){ toast(e.message,true); }
 }
 async function reload(){ try{ const d=await api('/reload',{method:'POST',headers:authHeaders()}); toast('已从文件重载 '+d.word_count+' 词'); await loadWords(); }catch(e){ toast(e.message,true);} }
+
+// ---- 语义样本库 ----
+// 未启用时服务端返回 503, 这与真正的错误要区分开:
+// 前者给出配置指引, 后者才提示报错。
+async function loadSamples(){
+  let r;
+  try{ r = await fetch('/samples', {headers:authHeaders()}); }
+  catch(e){ toast('加载样本库失败: '+e.message, true); return; }
+
+  if(r.status===503){
+    $('#sample-disabled').style.display='block';
+    $('#sample-main').style.display='none';
+    return;
+  }
+  const j = await r.json().catch(()=>({code:r.status,message:'非JSON响应'}));
+  if(j.code!==200){ toast(j.message||('HTTP '+r.status), true); return; }
+
+  $('#sample-disabled').style.display='none';
+  $('#sample-main').style.display='block';
+  const d = j.data, list = d.samples||[];
+  $('#sample-count').textContent = '共 '+d.count+' 条';
+  $('#sample-meta').textContent = '相似度阈值 '+d.threshold;
+
+  if(!list.length){
+    $('#sample-tbody').innerHTML='<tr><td colspan="5" class="muted" style="text-align:center;padding:20px">'+
+      '暂无样本。检测到模型漏报时，可在「检测」页把整句复制过来添加。</td></tr>';
+    return;
+  }
+  // 新加入的排在前面, 便于确认刚提交的样本
+  list.sort((a,b)=> (b.created_at||'').localeCompare(a.created_at||''));
+  $('#sample-tbody').innerHTML = list.map(s=>{
+    const lv=(s.levels||[]).map(l=>'<span class="lvl '+lvlClass(l)+'">'+esc(l)+'</span>').join(' ')||'<span class="muted">—</span>';
+    return '<tr><td style="word-break:break-all">'+esc(s.text)+'</td>'+
+      '<td>'+lv+'</td>'+
+      '<td class="muted">'+(s.remark?esc(s.remark):'—')+'</td>'+
+      '<td class="muted">'+fmtTime(s.created_at)+'</td>'+
+      '<td><button class="danger sm" onclick="delSample('+JSON.stringify(s.id)+')">删除</button></td></tr>';
+  }).join('');
+}
+function fmtTime(iso){
+  if(!iso) return '—';
+  const d=new Date(iso);
+  if(isNaN(d)) return esc(iso);
+  const p=n=>String(n).padStart(2,'0');
+  return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes());
+}
+function clearSampleForm(){ $('#s-text').value=''; $('#s-levels').value=''; $('#s-remark').value=''; }
+async function addSample(){
+  const text=$('#s-text').value.trim();
+  if(!text){ toast('样本文本不能为空',true); return; }
+  const levels=$('#s-levels').value.split(/[,，]/).map(s=>s.trim()).filter(Boolean);
+  const body={text:text, levels:levels, remark:$('#s-remark').value.trim()};
+  try{
+    const r=await fetch('/samples',{method:'POST',
+      headers:authHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
+    const j=await r.json().catch(()=>({code:r.status,message:'非JSON响应'}));
+    if(j.code!==200){ toast(j.message||('HTTP '+r.status),true); return; }
+    // 服务端对重复提交返回 added=false, 如实告知而不是假装新增成功
+    toast(j.data && j.data.added===false ? '该样本已存在' : '已添加样本');
+    clearSampleForm(); await loadSamples();
+  }catch(e){ toast(e.message,true); }
+}
+async function delSample(id){
+  if(!confirm('删除这条样本?')) return;
+  try{ await api('/samples/'+encodeURIComponent(id),{method:'DELETE',headers:authHeaders()});
+    toast('已删除'); await loadSamples(); }
+  catch(e){ toast(e.message,true); }
+}
+// 从检测结果一键加样本: 免去复制粘贴, 这是样本库最常用的入口
+async function addSampleFromCheck(){
+  const text=$('#check-text').value.trim();
+  if(!text){ toast('请先输入待检测文本',true); return; }
+  $('#s-text').value=text;
+  $('#s-levels').value='High';
+  $('#s-remark').value='模型漏报, 从检测页添加';
+  document.querySelector('.tab[data-tab="samples"]').click();
+  toast('已填入样本表单, 请确认后点击添加');
+}
 
 // ---- 统计 ----
 let STAT_PAGE=1, STAT_PAGE_SIZE=20, STAT_TOTAL_PAGES=0, STAT_LOADING=false;

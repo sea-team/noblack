@@ -30,6 +30,7 @@ import (
 	"noblack/internal/envfile"
 	"noblack/internal/matcher"
 	"noblack/internal/modelclient"
+	"noblack/internal/normalize"
 	"noblack/internal/samples"
 	"noblack/internal/stats"
 	"noblack/internal/store"
@@ -162,6 +163,7 @@ func main() {
 		addr         = flag.String("addr", envOrString("NB_ADDR", ":8080"), "HTTP 监听地址; 亦可用环境变量 NB_ADDR 设置")
 		watch        = flag.Bool("watch", envOrBool("NB_WATCH", true), "是否启用 fsnotify 文件监听热加载; 亦可用环境变量 NB_WATCH 设置")
 		caseIns      = flag.Bool("ci", envOrBool("NB_CI", false), "匹配是否大小写不敏感 (主要影响英文词, 如 Bilibili≈bilibili); 亦可用环境变量 NB_CI 设置")
+		pinyinIn     = flag.Bool("pinyin", envOrBool("NB_PINYIN", true), "启用拼音匹配, 对抗用拼音替换汉字的绕过 (zha yào -> 炸药); 需同时开启 -normalize; 亦可用环境变量 NB_PINYIN 设置")
 		normalizeIn  = flag.Bool("normalize", envOrBool("NB_NORMALIZE", true), "归一化输入以对抗变体绕过 (去标点/空白/零宽字符, 繁简与全半角折叠), 使 炸.药 能命中 炸药; 亦可用环境变量 NB_NORMALIZE 设置")
 		samplesFile  = flag.String("samples-file", envOrString("NB_SAMPLES", ""), "语义样本库文件路径 (JSON), 用于补足模型漏报; 留空则禁用; 亦可用环境变量 NB_SAMPLES 设置")
 		sampleThresh = flag.Float64("sample-threshold", envOrFloat("NB_SAMPLE_THRESHOLD", samples.DefaultThreshold), "语义样本相似度阈值 (0-1), 越高越严格; 亦可用环境变量 NB_SAMPLE_THRESHOLD 设置")
@@ -208,9 +210,15 @@ func main() {
 		CaseInsensitive: *caseIns,
 		DefaultLevel:    *defLevel,
 		Normalize:       *normalizeIn,
+		Pinyin:          *pinyinIn,
 	}
 	if *normalizeIn {
 		log.Printf("已启用输入归一化 (对抗 炸.药 这类变体绕过)")
+	}
+	if *normalizeIn && *pinyinIn {
+		log.Printf("已启用拼音匹配 (对抗 zha yào 这类拼音绕过)")
+	} else if *pinyinIn {
+		log.Printf("拼音匹配需要同时开启归一化 (-normalize), 本次未生效")
 	}
 
 	// 1. 加载词条。
@@ -222,6 +230,10 @@ func main() {
 	// 2. 放入 Store (内部构建自动机)。
 	st := store.New(*wordsPath, entries, opts)
 	log.Printf("初始化完成, 加载词条数: %d, 等级集合: %v", st.Current().Size(), st.Current().Levels())
+	if n := st.Current().PinyinSize(); n > 0 {
+		log.Printf("拼音索引词条数: %d (仅收录拼音长度 >= %d 的词条, 短拼音同音词过多会误报)",
+			n, normalize.MinPinyinLength)
+	}
 
 	// 3. 统计收集器 (可选持久化)。
 	metrics := stats.New()

@@ -61,6 +61,17 @@ type Automaton struct {
 	levels          []string // 词库中出现过的全部等级 (已排序去重)
 	caseInsensitive bool     // 是否大小写不敏感 (主要惠及英文)
 	normalized      bool     // 词条是否已归一化 (决定应走 FindAll 还是 FindAllNormalized)
+
+	// pinyin 是可选的拼音索引, 用于对抗拼音替换绕过。nil 表示未启用。
+	pinyin *pinyinAutomaton
+}
+
+// PinyinSize 返回建立了拼音索引的词条数; 未启用拼音时为 0。
+func (a *Automaton) PinyinSize() int {
+	if a == nil {
+		return 0
+	}
+	return a.pinyin.Size()
 }
 
 // Normalized 报告该自动机的词条是否按归一化规则构建。
@@ -134,17 +145,28 @@ func NewNormalizedBuilder(caseInsensitive bool) *Builder {
 // Add 插入一个词条及其元信息。word 为空则忽略; 重复词条以后插入者为准。
 // levels 支持一个词条挂多个等级; 传空时该词条无等级。
 func (b *Builder) Add(word string, levels []Level, remarks []string) {
-	if word == "" {
+	b.AddAs(word, word, levels, remarks)
+}
+
+// AddAs 以 key 为匹配键插入, 但命中结果对外展示 displayWord。
+//
+// 供拼音索引使用: 键是拼音 (zhayao), 展示的仍是词库原文 (炸药) ——
+// 否则用户在命中列表里看到的是一串拼音, 无法与词库对应。
+func (b *Builder) AddAs(key, displayWord string, levels []Level, remarks []string) {
+	if key == "" {
 		return
+	}
+	word := key
+	if displayWord != "" {
+		word = displayWord
 	}
 	// 键用归一化后的词, 与 FindAllNormalized 的输入处于同一空间;
 	// meta.Word 仍保留原始写法, 命中结果对外展示的是词库里的原文。
 	//
 	// 词条本身若含标点 (如 "a.b"), 归一化后会变成 "ab" —— 这是有意的:
 	// 输入端同样会被归一化, 两侧一致才能匹配。
-	key := word
 	if b.normalized {
-		if folded := normalize.Text(word); folded != "" {
+		if folded := normalize.Text(key); folded != "" {
 			key = folded
 		}
 	}
@@ -255,7 +277,30 @@ func (a *Automaton) FindAllNormalized(text string) []Match {
 		matches[i].Start = start
 		matches[i].End = end
 	}
+
+	// 拼音命中作为补充: 字面已命中的同一 (词, 位置) 不重复上报。
+	if pinyinMatches := a.pinyin.findAll(text); len(pinyinMatches) > 0 {
+		seen := make(map[matchKey]struct{}, len(matches))
+		for _, m := range matches {
+			seen[matchKey{m.Word, m.Start, m.End}] = struct{}{}
+		}
+		for _, m := range pinyinMatches {
+			key := matchKey{m.Word, m.Start, m.End}
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			matches = append(matches, m)
+		}
+	}
 	return matches
+}
+
+// matchKey 用于合并字面命中与拼音命中时去重。
+type matchKey struct {
+	word  string
+	start int
+	end   int
 }
 
 // FindAll 查找 text 中所有命中 (含重叠)。时间复杂度 O(n + z), 与词库规模无关。

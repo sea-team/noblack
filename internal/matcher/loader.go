@@ -18,6 +18,13 @@ type Options struct {
 	// Normalize 为 true 时, 词条与输入都会先做归一化 (去标点/空白/零宽字符,
 	// 繁简、全半角、大小写折叠), 用于对抗 "炸.药" 这类插入字符的绕过手段。
 	Normalize bool
+	// Pinyin 为 true 时额外建立拼音索引, 用于对抗 "zha yào" 这类
+	// 用拼音替换汉字的绕过手段。只索引拼音长度 >= 6 且含汉字的词条,
+	// 短拼音歧义过大 (xing 可对应几十个字) 必然误报。
+	//
+	// 拼音匹配依赖归一化 (声调折叠在归一化阶段完成), 因此 Normalize
+	// 为 false 时该项无效。
+	Pinyin bool
 }
 
 // Entry 是词库中的一个词条 (归一化后的内部/对外表示)。
@@ -152,12 +159,21 @@ func BuildFromEntries(entries []Entry, opts Options) *Automaton {
 	if opts.Normalize {
 		b = NewNormalizedBuilder(opts.CaseInsensitive)
 	}
+	// 拼音索引用拆分后的单词构建, 与主自动机保持同一批词。
+	var expanded []Entry
 	for _, e := range entries {
 		for _, w := range SplitWords(e.Word) {
 			b.Add(w, e.Levels, e.Remarks)
+			if opts.Normalize && opts.Pinyin {
+				expanded = append(expanded, Entry{Word: w, Levels: e.Levels, Remarks: e.Remarks})
+			}
 		}
 	}
-	return b.Build()
+	automaton := b.Build()
+	if opts.Normalize && opts.Pinyin {
+		automaton.pinyin = buildPinyinAutomaton(expanded, opts.CaseInsensitive)
+	}
+	return automaton
 }
 
 // SplitWords 把词条的 word 字段按中英文逗号拆成多个独立敏感词, 去空白去空项。
