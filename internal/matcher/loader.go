@@ -64,11 +64,17 @@ func LoadFromFile(path string, opts Options) (*Automaton, error) {
 	return BuildFromEntries(entries, opts), nil
 }
 
+// DefaultLevel 是词条未显式标注等级时使用的等级。
+//
+// 词库文件加载与 API 新增/修改都回落到它, 保证同一条词条无论从哪个入口
+// 进来都有等级 —— 空等级的词条在列表筛选与统计归类里都会掉出来。
+const DefaultLevel = "Low"
+
 // LoadEntries 读取并解析 JSON 词库文件, 返回归一化后的词条列表 (不构建自动机)。
 // CRUD 接口用它拿到当前全部词条。
 func LoadEntries(path string, opts Options) ([]Entry, error) {
 	if opts.DefaultLevel == "" {
-		opts.DefaultLevel = "Low"
+		opts.DefaultLevel = DefaultLevel
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -199,9 +205,15 @@ func NormalizeWord(word string) string {
 // NormalizeEntry 归一化整个词条: word 去脏, levels/remarks 去空白去空项。
 // 供 CRUD 写入前统一清洗, 保证落盘的数据干净。
 func NormalizeEntry(e Entry) Entry {
+	levels := cleanStrings(e.Levels)
+	// 未标注等级时回落到 DefaultLevel, 与词库文件加载时的行为一致 ——
+	// 否则通过 API 新增的词条会是空等级, 在列表与统计里都无法归类。
+	if len(levels) == 0 {
+		levels = []string{DefaultLevel}
+	}
 	return Entry{
 		Word:    NormalizeWord(e.Word),
-		Levels:  cleanStrings(e.Levels),
+		Levels:  levels,
 		Remarks: cleanStrings(e.Remarks),
 	}
 }

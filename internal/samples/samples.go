@@ -192,9 +192,7 @@ func (s *Store) Add(text string, levels []string, remark string) (Sample, bool, 
 			return *existing, false, nil
 		}
 	}
-	if levels == nil {
-		levels = []string{}
-	}
+	levels = cleanLevels(levels)
 	sample := &Sample{
 		ID:        identifier,
 		Text:      trimmed,
@@ -211,6 +209,81 @@ func (s *Store) Add(text string, levels []string, remark string) (Sample, bool, 
 	}
 	return *sample, true, nil
 }
+
+// Update 按 ID 更新样本。text 为空表示不改文本, 只改等级与备注。
+//
+// 注意 ID 由文本哈希生成 (见 idOf), 因此改了文本就等于换了 ID:
+// 此时返回的样本会带上新 ID, 调用方需据此刷新列表。
+// 新文本若与另一条已有样本重复, 返回错误而不是静默合并。
+func (s *Store) Update(id, text string, levels []string, remark string) (Sample, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	index := -1
+	for i, sample := range s.samples {
+		if sample.ID == id {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return Sample{}, errNotFound
+	}
+
+	current := s.samples[index]
+	// 保留原值, 失败时回滚
+	backup := *current
+
+	if trimmed := strings.TrimSpace(text); trimmed != "" && trimmed != current.Text {
+		if normalize.Text(trimmed) == "" {
+			return Sample{}, errors.New("样本文本不含可比较的内容")
+		}
+		newID := idOf(trimmed)
+		for i, other := range s.samples {
+			if i != index && other.ID == newID {
+				return Sample{}, errors.New("已存在内容相同的样本")
+			}
+		}
+		current.ID = newID
+		current.Text = trimmed
+		current.bigrams = bigramsOf(trimmed)
+	}
+	if levels != nil {
+		current.Levels = cleanLevels(levels)
+	}
+	current.Remark = strings.TrimSpace(remark)
+
+	if err := s.persistLocked(); err != nil {
+		*current = backup
+		return Sample{}, err
+	}
+	return *current, nil
+}
+
+// DefaultLevel 是样本未标注等级时使用的等级, 与词库保持一致。
+const DefaultLevel = "Low"
+
+// cleanLevels 去空白去空项; 全空时回落到 DefaultLevel。
+//
+// 样本的等级会随命中结果一起返回给调用方, 空等级会让下游无法按风险分级处理。
+func cleanLevels(levels []string) []string {
+	out := make([]string, 0, len(levels))
+	for _, level := range levels {
+		if trimmed := strings.TrimSpace(level); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	if len(out) == 0 {
+		return []string{DefaultLevel}
+	}
+	return out
+}
+
+// errNotFound 表示按 ID 未找到样本, 供上层区分 404 与 500。
+var errNotFound = errors.New("样本不存在")
+
+// IsNotFound 报告错误是否为 "样本不存在"。
+func IsNotFound(err error) bool { return errors.Is(err, errNotFound) }
 
 // Delete 按 ID 删除样本。返回是否确实删除了。
 func (s *Store) Delete(id string) (bool, error) {

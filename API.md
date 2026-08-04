@@ -77,6 +77,10 @@
 | DELETE | `/words/{word}` | 删除一个词条 | 无 |
 | GET | `/auth/status` | 查询是否需要令牌（写操作 / 检测各一项） | 无 |
 | POST | `/auth/verify` | 校验令牌是否正确 | 无（令牌走请求头） |
+| GET | `/samples` | 列出语义样本库 | 无 |
+| POST | `/samples` | 新增样本 | JSON |
+| PUT | `/samples/{id}` | 修改样本 | JSON |
+| DELETE | `/samples/{id}` | 删除样本 | 无 |
 | GET | `/stats` | 查询运行统计（请求数、高频词等） | 无 |
 | POST | `/stats/reset` | 清零统计 | 无 |
 | POST | `/reload` | 手动触发词库热加载 | 无 |
@@ -428,7 +432,43 @@ curl -X DELETE "http://localhost:8080/words/%E6%8C%96%E7%9F%BF"
 
 **错误**：词条不存在 → **HTTP 404** `{"code":404,"message":"词条 \"挖矿\" 不存在"}`。
 
-### 2.5 鉴权端点
+### 2.5 语义样本库
+
+用整句相似度补足模型漏报：把模型没识别出的整句提交上来立即生效，无需重训。检测时用字符 n-gram（Dice 系数）召回相似句式。
+
+需要服务端配置 `NB_SAMPLES`（样本库文件路径），未配置时全部返回 **HTTP 503**。写操作（POST/PUT/DELETE）需管理令牌。
+
+**GET /samples** — 列出全部样本。
+
+```bash
+curl http://localhost:8080/samples
+# {"code":200,"data":{"samples":[...],"count":3,"threshold":0.75}}
+```
+
+**POST /samples** — 新增样本。`levels` 留空时默认 `Low`。
+
+```bash
+curl -X POST http://localhost:8080/samples -H "X-Auth-Token: s3cret" \
+  -H "Content-Type: application/json" \
+  -d '{"text":"完整的整句样本文本","levels":["High"],"remark":"模型漏报"}'
+# {"code":200,"message":"success","data":{"sample":{...},"added":true}}
+```
+
+重复提交同一文本不报错，返回已有样本并置 `added:false`（`message` 为 `样本已存在`）。
+
+**PUT /samples/{id}** — 修改样本。`text` 留空表示只改等级与备注。
+
+```bash
+curl -X PUT http://localhost:8080/samples/a1b2c3 -H "X-Auth-Token: s3cret" \
+  -H "Content-Type: application/json" \
+  -d '{"levels":["High"],"remark":"调整等级"}'
+```
+
+> ⚠️ **样本 ID 由文本哈希生成，改了文本就会换 ID。** 响应里返回的是新 ID，调用方需据此刷新本地列表。改成与另一条重复的文本会返回 **400**，不会静默合并。
+
+**DELETE /samples/{id}** — 删除样本。ID 不存在返回 **404**。
+
+### 2.6 鉴权端点
 
 **GET /auth/status** — 前端据此决定是否显示令牌输入框。
 `required` 表示写操作鉴权是否开启，`detect_required` 表示检测接口鉴权是否开启。

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	"noblack/internal/samples"
 )
 
 // 语义样本库接口。
@@ -14,6 +16,7 @@ import (
 //
 //	GET    /samples          列出全部样本
 //	POST   /samples          新增样本 (需鉴权)
+//	PUT    /samples/{id}     修改样本 (需鉴权)
 //	DELETE /samples/{id}     删除样本 (需鉴权)
 
 type addSampleRequest struct {
@@ -77,8 +80,8 @@ func (h *Handler) handleSampleByID(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "语义样本库未启用 (需设置 -samples-file)")
 		return
 	}
-	if r.Method != http.MethodDelete {
-		writeErr(w, http.StatusMethodNotAllowed, "仅支持 DELETE")
+	if r.Method != http.MethodDelete && r.Method != http.MethodPut {
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 PUT 与 DELETE")
 		return
 	}
 	if !h.requireAuth(w, r) {
@@ -90,6 +93,29 @@ func (h *Handler) handleSampleByID(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "样本 ID 无效")
 		return
 	}
+
+	if r.Method == http.MethodPut {
+		var req addSampleRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
+			return
+		}
+		updated, err := h.samples.Update(id, req.Text, req.Levels, req.Remark)
+		if err != nil {
+			if samples.IsNotFound(err) {
+				writeErr(w, http.StatusNotFound, "样本不存在: "+id)
+				return
+			}
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, apiResponse{
+			Code: 200, Message: "success",
+			Data: map[string]interface{}{"sample": updated},
+		})
+		return
+	}
+
 	removed, err := h.samples.Delete(id)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "删除失败: "+err.Error())

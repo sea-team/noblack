@@ -94,7 +94,7 @@ const indexHTML = `<!DOCTYPE html>
       <h3 id="word-form-title">➕ 新增词条</h3>
       <div class="row">
         <div style="flex:1;min-width:160px"><label class="muted">敏感词(逗号分隔可多个)</label><input id="w-word" placeholder="如: 大雷,小雷"></div>
-        <div style="flex:1;min-width:160px"><label class="muted">等级(逗号分隔,可多个)</label><input id="w-levels" placeholder="如: bilibili,引流"></div>
+        <div style="flex:1;min-width:160px"><label class="muted">等级(逗号分隔,留空默认 Low)</label><input id="w-levels" placeholder="留空默认 Low"></div>
         <div style="flex:1;min-width:160px"><label class="muted">备注(逗号分隔,可多个)</label><input id="w-remarks" placeholder="如: 引流站点"></div>
       </div>
       <div class="row">
@@ -140,19 +140,19 @@ NB_SAMPLE_THRESHOLD=0.75</pre>
     <div id="sample-main" style="display:none">
       <div class="card">
         <div class="row" style="justify-content:space-between">
-          <h3 style="margin:0">新增样本</h3>
+          <h3 style="margin:0" id="sample-form-title">➕ 新增样本</h3>
           <span class="muted" id="sample-meta"></span>
         </div>
         <p class="muted" style="margin:6px 0 10px">把模型漏报的<b>整句</b>贴进来。检测时用字符 n-gram 相似度召回相似句式，因此样本越接近真实写法效果越好。</p>
         <textarea id="s-text" rows="3" placeholder="例：今晚老公不在家，寂寞难耐，谁来陪我做快乐的事，加我微信。"></textarea>
         <div class="row" style="margin-top:8px">
-          <div style="flex:1"><label class="muted">风险等级（逗号分隔）</label>
-            <input id="s-levels" placeholder="High"></div>
+          <div style="flex:1"><label class="muted">风险等级（逗号分隔，留空默认 Low）</label>
+            <input id="s-levels" placeholder="留空默认 Low"></div>
           <div style="flex:2"><label class="muted">备注（为什么加这条）</label>
             <input id="s-remark" placeholder="模型漏报的招嫖话术"></div>
         </div>
         <div class="row" style="margin-top:10px">
-          <button onclick="addSample()">➕ 添加样本</button>
+          <button onclick="saveSample()" id="s-save-btn">添加样本</button>
           <button class="ghost" onclick="clearSampleForm()">清空</button>
         </div>
       </div>
@@ -406,6 +406,7 @@ async function delWord(word){
 async function reload(){ try{ const d=await api('/reload',{method:'POST',headers:authHeaders()}); toast('已从文件重载 '+d.word_count+' 词'); await loadWords(); }catch(e){ toast(e.message,true);} }
 
 // ---- 语义样本库 ----
+let PAGE_SAMPLES=[], SAMPLE_EDITING=null;
 // 未启用时服务端返回 503, 这与真正的错误要区分开:
 // 前者给出配置指引, 后者才提示报错。
 async function loadSamples(){
@@ -434,15 +435,27 @@ async function loadSamples(){
   }
   // 新加入的排在前面, 便于确认刚提交的样本
   list.sort((a,b)=> (b.created_at||'').localeCompare(a.created_at||''));
-  $('#sample-tbody').innerHTML = list.map(s=>{
+  PAGE_SAMPLES = list;
+  // 用事件委托而非内联 onclick: 样本 ID 拼进 onclick 时,
+  // JSON.stringify 产出的双引号会提前闭合 HTML 属性, 按钮点了没反应。
+  $('#sample-tbody').innerHTML = list.map((s,i)=>{
     const lv=(s.levels||[]).map(l=>'<span class="lvl '+lvlClass(l)+'">'+esc(l)+'</span>').join(' ')||'<span class="muted">—</span>';
     return '<tr><td style="word-break:break-all">'+esc(s.text)+'</td>'+
       '<td>'+lv+'</td>'+
       '<td class="muted">'+(s.remark?esc(s.remark):'—')+'</td>'+
       '<td class="muted">'+fmtTime(s.created_at)+'</td>'+
-      '<td><button class="danger sm" onclick="delSample('+JSON.stringify(s.id)+')">删除</button></td></tr>';
+      '<td><button class="ghost sm" data-sample-action="edit" data-sample-index="'+i+'">改</button> '+
+      '<button class="danger sm" data-sample-action="delete" data-sample-index="'+i+'">删</button></td></tr>';
   }).join('');
 }
+$('#sample-tbody').addEventListener('click',e=>{
+  const btn=e.target.closest('button[data-sample-action]');
+  if(!btn)return;
+  const s=PAGE_SAMPLES[Number(btn.dataset.sampleIndex)];
+  if(!s)return;
+  if(btn.dataset.sampleAction==='edit')editSample(s);
+  else if(btn.dataset.sampleAction==='delete')delSample(s.id);
+});
 function fmtTime(iso){
   if(!iso) return '—';
   const d=new Date(iso);
@@ -450,19 +463,39 @@ function fmtTime(iso){
   const p=n=>String(n).padStart(2,'0');
   return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes());
 }
-function clearSampleForm(){ $('#s-text').value=''; $('#s-levels').value=''; $('#s-remark').value=''; }
-async function addSample(){
+function clearSampleForm(){
+  SAMPLE_EDITING=null;
+  $('#s-text').value=''; $('#s-levels').value=''; $('#s-remark').value='';
+  $('#sample-form-title').textContent='➕ 新增样本';
+  $('#s-save-btn').textContent='添加样本';
+}
+// 载入一条样本到表单进入编辑态。样本 ID 由文本哈希生成, 改文本会换 ID,
+// 因此这里记住原 ID 供 PUT 定位。
+function editSample(s){
+  SAMPLE_EDITING=s.id;
+  $('#s-text').value=s.text||'';
+  $('#s-levels').value=(s.levels||[]).join(',');
+  $('#s-remark').value=s.remark||'';
+  $('#sample-form-title').textContent='✏️ 修改样本';
+  $('#s-save-btn').textContent='保存修改';
+  $('#s-text').focus();
+}
+async function saveSample(){
   const text=$('#s-text').value.trim();
   if(!text){ toast('样本文本不能为空',true); return; }
+  // 等级留空时服务端会补 Low, 前端不必强制填写
   const levels=$('#s-levels').value.split(/[,，]/).map(s=>s.trim()).filter(Boolean);
   const body={text:text, levels:levels, remark:$('#s-remark').value.trim()};
+  const editing=SAMPLE_EDITING;
   try{
-    const r=await fetch('/samples',{method:'POST',
-      headers:authHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
+    const r=await fetch(editing?('/samples/'+encodeURIComponent(editing)):'/samples',
+      {method:editing?'PUT':'POST',
+       headers:authHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
     const j=await r.json().catch(()=>({code:r.status,message:'非JSON响应'}));
     if(j.code!==200){ toast(j.message||('HTTP '+r.status),true); return; }
+    if(editing) toast('已保存修改');
     // 服务端对重复提交返回 added=false, 如实告知而不是假装新增成功
-    toast(j.data && j.data.added===false ? '该样本已存在' : '已添加样本');
+    else toast(j.data && j.data.added===false ? '该样本已存在' : '已添加样本');
     clearSampleForm(); await loadSamples();
   }catch(e){ toast(e.message,true); }
 }
@@ -478,6 +511,7 @@ async function addSampleFromCheck(){
   if(!text){ toast('请先输入待检测文本',true); return; }
   $('#s-text').value=text;
   $('#s-levels').value='High';
+  SAMPLE_EDITING=null;
   $('#s-remark').value='模型漏报, 从检测页添加';
   document.querySelector('.tab[data-tab="samples"]').click();
   toast('已填入样本表单, 请确认后点击添加');
