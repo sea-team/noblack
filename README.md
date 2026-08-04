@@ -443,8 +443,17 @@ PyInstaller 不支持交叉编译。若临时需要在 Linux 上打 Windows 包�
 
 ```bash
 .build/linux-venv/bin/python scripts/release.py build --target windows-amd64 \
-  --model-executable .build/pyi-dist/noblack-model.exe
+  --model-executable .build/keep/noblack-model.exe
 ```
+
+> ⚠️ **`--model-executable` 的路径不能放在 `.build/<target>/` 下。**
+> `release.py` 在构建开始时会清空该目录，源文件会在被读取前就被删掉，
+> 报错 `model executable missing`。把要复用的 exe 先拷到 `.build/keep/`
+> 之类不参与清理的目录再传入。
+>
+> 上次在 Windows 上原生构建的产物会同时留在 `dist/noblack-windows-amd64/`，
+> 那份可以作为复用来源（注意先确认它比 `.build/pyi-dist/` 里的更新——
+> 后者可能是很久以前的旧版）。
 
 但这样只有 Go 主服务是新的，**模型服务仍是复用的旧版**——`model_service/` 下的 Python 改动不会进入该包。只要改动了 `model_service/`，就必须按上面的 PowerShell 方式在 Windows 上原生构建。
 
