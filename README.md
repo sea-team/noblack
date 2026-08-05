@@ -21,6 +21,32 @@
 
 ## 快速开始
 
+### 克隆仓库（重要：模型权重走 Git LFS）
+
+`models/**/model.safetensors` 由 Git LFS 管理。**直接 `git clone` 拿到的是 132 字节的指针文件，不是真实权重**，此时模型服务无法启动、发布包也构建不出来（`release.py` 会主动拒绝 LFS 指针）。
+
+```bash
+# 先装 git-lfs：Debian/Ubuntu 用 apt install git-lfs，macOS 用 brew install git-lfs
+git lfs install
+git clone <仓库地址>
+cd noblack
+git lfs pull          # 拉取约 800MB 的模型权重
+```
+
+已经克隆过但忘了装 LFS，补拉即可：
+
+```bash
+git lfs install && git lfs pull
+```
+
+检查是否拉取成功——真实权重是几百 MB，指针只有 132 字节：
+
+```bash
+ls -la models/lite-production-v1/model.safetensors
+```
+
+> 只做词库检测、不启用 AI 模型时可以跳过这一步，用 `-model-service-url ""` 启动即可。
+
 ### 本地运行
 
 环境要求：Go 1.21 或更高版本。
@@ -386,6 +412,20 @@ docker compose up -d --build
 ## Windows/Linux 离线运行包
 
 发布脚本会校验生产模型权重，分别构建 Go 主服务和 PyInstaller 模型服务，并生成带 SHA-256 的原生离线包。模型程序必须在目标操作系统上构建。
+
+#### 新环境初始化
+
+新克隆的仓库缺两样构建必需、但不在版本库里的东西：**LFS 模型权重**（仓库里只有 132 字节的指针）和 **Python 虚拟环境**（`.build/` 在 `.gitignore` 中）。一条命令补齐：
+
+```bash
+./scripts/bootstrap.sh
+```
+
+它会依次：检查 Go/Python → 拉取 LFS 权重 → 建 venv 并装依赖（torch CPU 版 + requirements + PyInstaller）→ 跑 Go 测试 → 校验发布输入。脚本是幂等的，已就绪的环节会跳过，可反复执行。
+
+常用选项：`--recreate`（依赖版本变更后重建 venv）、`--skip-lfs`、`--skip-venv`。
+
+> 环境已经就绪时不必运行它——下面这段说明的就是复用现有环境的方式。
 
 > ⚠️ **构建前先看这里，不要重新安装依赖。**
 >
