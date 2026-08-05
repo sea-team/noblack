@@ -105,8 +105,9 @@ if [ "$PURGE" = "1" ]; then
   log "已删除: $INSTALL_DIR"
 else
   # 只删程序文件和模型, 保留 data/ 与 config.env。
-  for item in noblack noblack-model models README.txt config.env.example \
-              deploy.sh restart.sh status.sh start.sh stop.sh start-keywords-only.sh SHA256SUMS; do
+  # .backup 是 update.sh 留下的旧版二进制 (约 280MB), 程序都卸了就没有保留意义。
+  for item in noblack noblack-model models README.txt config.env.example .backup \
+              deploy.sh update.sh restart.sh status.sh start.sh stop.sh start-keywords-only.sh SHA256SUMS; do
     if [ -e "$INSTALL_DIR/$item" ]; then
       rm -rf "$INSTALL_DIR/${item:?}"
     fi

@@ -66,5 +66,17 @@ if [ -f "$SYSTEMD_DIR/$MODEL_SERVICE.service" ]; then
     echo "模型服务:  无响应"
   fi
 fi
+
+# update.sh 留下的备份: 有备份才能回滚, 状态里明示避免临事才发现没有。
+if [ -f "$INSTALL_DIR/.backup/noblack" ]; then
+  echo ""
+  echo "可回滚版本"
+  echo "----------"
+  if [ -f "$INSTALL_DIR/.backup/VERSION" ]; then
+    echo "备份时间:  $(cat "$INSTALL_DIR/.backup/VERSION")"
+  fi
+  echo "回滚命令:  sudo $INSTALL_DIR/update.sh --rollback"
+fi
+
 echo ""
 echo "查看日志:  journalctl -u $GO_SERVICE -f"
